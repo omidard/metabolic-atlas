@@ -293,10 +293,74 @@ export async function createMap(container, graph, groupColors, opts = {}) {
       scene.remove(hlGroup);
       hlGroup = null;
     }
+    if (!koGroup) undim();
+  }
+
+  function undim() {
     mainEdges.material.opacity = 0.14;
     mainPoints.material.opacity = 0.95;
     curEdges.material.opacity = 0.05;
     curPoints.material.opacity = 0.4;
+  }
+
+  // ---- knockout marks: every substrate-to-product segment of the named union
+  // reactions, drawn in the given colour with a midpoint marker. Independent of
+  // the pathway highlight so both can show at once.
+  let koGroup = null;
+  let rxnIndex = null;
+  function highlightReactions(rxnIds, colorHex) {
+    clearReactionHighlight();
+    if (!rxnIndex) rxnIndex = new Map(graph.reactions.map(r => [r.id, r]));
+    const found = [];
+    const missing = [];
+    for (const rid of rxnIds) {
+      const r = rxnIndex.get(rid);
+      if (r) found.push(r); else missing.push(rid);
+    }
+    if (!found.length) return { drawn: 0, missing };
+    koGroup = new THREE.Group();
+    const mat = new THREE.MeshBasicMaterial({ color: colorHex, transparent: true, opacity: 0.95, depthTest: false });
+    const centers = [];
+    for (const r of found) {
+      for (const sMid of r.s) {
+        const ms = graph.metabolites[sMid];
+        if (!ms) continue;
+        for (const pMid of r.p) {
+          const mp = graph.metabolites[pMid];
+          if (!mp) continue;
+          const seg = cylinderBetween(ms.p, mp.p, 0.28, mat);
+          if (!seg) continue;
+          koGroup.add(seg);
+          const mark = new THREE.Mesh(new THREE.OctahedronGeometry(0.9), mat);
+          mark.position.set(
+            (ms.p[0] + mp.p[0]) / 2, (ms.p[1] + mp.p[1]) / 2, (ms.p[2] + mp.p[2]) / 2);
+          mark.renderOrder = 12;
+          koGroup.add(mark);
+          centers.push(mark.position.clone());
+        }
+      }
+    }
+    scene.add(koGroup);
+    mainEdges.material.opacity = 0.04;
+    mainPoints.material.opacity = 0.25;
+    curEdges.material.opacity = 0.02;
+    curPoints.material.opacity = 0.15;
+    if (centers.length) {
+      const box = new THREE.Box3();
+      for (const c of centers) box.expandByPoint(c);
+      const sphere = box.getBoundingSphere(new THREE.Sphere());
+      frameOn(sphere.center.toArray(), Math.max(sphere.radius, 8));
+    }
+    return { drawn: found.length, missing };
+  }
+
+  function clearReactionHighlight() {
+    if (koGroup) {
+      koGroup.traverse(o => { if (o.geometry) o.geometry.dispose(); });
+      scene.remove(koGroup);
+      koGroup = null;
+    }
+    if (!hlGroup) undim();
   }
 
   // ---- render loop
@@ -343,6 +407,8 @@ export async function createMap(container, graph, groupColors, opts = {}) {
   return {
     highlightPathway,
     clearHighlight,
+    highlightReactions,
+    clearReactionHighlight,
     setCurrencyVisible(v) { curPoints.visible = v; curEdges.visible = v; },
     setLabelsVisible(v) { sectorLabels.forEach(l => { l.visible = v; }); },
     resetView() {

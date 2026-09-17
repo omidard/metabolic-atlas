@@ -319,6 +319,37 @@ tr.m2-unknown td { color: var(--ink-2); }
 .fluxval { font-family: var(--mono); font-size: var(--t-xs); color: var(--accent-ink); font-weight: 600; }
 .fluxval.na { color: var(--ink-2); font-weight: 400; }
 
+/* ---------- analysis view ---------- */
+.an-section { margin-top: var(--s4); }
+.an-verdict { margin-top: var(--s4); border-left: 3px solid var(--accent); }
+.an-chips { display: flex; gap: var(--s2); flex-wrap: wrap; align-items: center; }
+.an-chips .feas-chip { font-size: var(--t-s); padding: var(--s1) var(--s3); }
+.an-picker { flex: 1 1 200px; }
+.an-note { font-size: var(--t-xs); color: var(--ink-2); font-family: var(--font); font-weight: 400; }
+.an-kochip {
+  display: inline-flex; align-items: center; gap: var(--s2);
+  border: 1px solid var(--err-ink); border-radius: 999px;
+  background: var(--err-wash); color: var(--err-ink);
+  padding: var(--s1) var(--s2) var(--s1) var(--s3); font-size: var(--t-s);
+}
+.an-cls { font-size: var(--t-xs); font-weight: 600; border-radius: 999px; padding: 1px var(--s2); border: 1px solid var(--line-strong); color: var(--ink-2); white-space: nowrap; }
+.an-cls.lethal { color: var(--err-ink); border-color: var(--err-ink); background: var(--err-wash); }
+.an-cls.costly { color: var(--warn-ink); border-color: var(--warn-ink); }
+.an-cls.beneficial { color: var(--ok); border-color: var(--ok); background: #EEF6F1; }
+.thsort {
+  background: none; border: none; cursor: pointer; padding: 0;
+  font: inherit; color: inherit; text-decoration: underline dotted;
+  text-underline-offset: 3px;
+}
+.thsort:hover { color: var(--ink); }
+.an-log { margin: var(--s2) 0 0; padding-left: 18px; font-size: var(--t-s); color: var(--ink-2); }
+.an-log li { margin-bottom: var(--s1); }
+.an-duals { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: var(--s4); margin-top: var(--s3); }
+.an-envsvg { width: 100%; max-width: 760px; height: auto; display: block; background: var(--surface); }
+.an-envtick { font-size: 12px; fill: var(--ink-2); font-family: var(--font); }
+.an-envlabel { font-size: 13px; fill: var(--ink); font-family: var(--font); }
+progress.an-progress { width: 100%; max-width: 420px; accent-color: var(--accent-ink); }
+
 /* ---------- roadmap / footer ---------- */
 .phase2 { border: 1px dashed var(--line-strong); border-radius: var(--r2); padding: var(--s3) var(--s4); color: var(--ink-2); font-size: var(--t-s); background: var(--surface); }
 .phase2 h3 { margin-top: 0; color: var(--ink); }

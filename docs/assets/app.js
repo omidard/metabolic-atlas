@@ -128,10 +128,51 @@ function metLabelHTML(mid) {
 function route() {
   const h = location.hash || '#/search';
   const onGems = h.startsWith('#/gems');
-  $('#view-search').hidden = onGems;
+  const onAnalysis = h.startsWith('#/analysis');
+  $('#view-search').hidden = onGems || onAnalysis;
   $('#view-gems').hidden = !onGems;
-  $('#nav-search').setAttribute('aria-current', onGems ? 'false' : 'page');
+  $('#view-analysis').hidden = !onAnalysis;
+  $('#nav-search').setAttribute('aria-current', (onGems || onAnalysis) ? 'false' : 'page');
   $('#nav-gems').setAttribute('aria-current', onGems ? 'page' : 'false');
+  $('#nav-analysis').setAttribute('aria-current', onAnalysis ? 'page' : 'false');
+  if (onAnalysis) activateAnalysis();
+}
+
+// ================= analysis view (lazy) =================
+let ANALYSIS = null, analysisLoading = false;
+async function activateAnalysis() {
+  if (ANALYSIS) { ANALYSIS.setActive(true); return; }
+  if (analysisLoading) return;
+  analysisLoading = true;
+  const section = $('#view-analysis');
+  try {
+    for (let i = 0; i < 40 && !INDEX; i++) await new Promise(r => setTimeout(r, 200));   // boot may still be fetching the index
+    if (!INDEX) {
+      section.innerHTML = '<h1>Constraint-based analysis</h1><p class="status error">The GEM index has not loaded; reload the page and open Analysis again.</p>';
+      return;
+    }
+    const mod = await import('./analysis.js');
+    ANALYSIS = await mod.initAnalysis(section, {
+      index: INDEX,
+      metName,
+      setAccent,
+      getEndpoints: () => ({ sub: pickerState.sub.mid, prod: pickerState.prod.mid }),
+      mapAvailable: () => !!map,
+      showKOsOnMap: (rids) => {
+        if (!map) return null;
+        const res = map.highlightReactions(rids, accentInk());
+        location.hash = '#/search';
+        $('#clear-highlight').hidden = false;
+        return res;
+      },
+    });
+    ANALYSIS.setActive(true);
+  } catch (e) {
+    section.innerHTML = `<h1>Constraint-based analysis</h1>
+      <p class="status error">The analysis module failed to load (${esc(e.message)}). Reload the page to retry; search and the GEM browser keep working.</p>`;
+  } finally {
+    analysisLoading = false;
+  }
 }
 
 // ================= species chips =================
@@ -521,7 +562,7 @@ function showPathwayOnMap(pw, idx, { animate = false, weights = null } = {}) {
 }
 
 function clearMapHighlight() {
-  if (map) map.clearHighlight();
+  if (map) { map.clearHighlight(); map.clearReactionHighlight(); }
   highlightedIdx = null;
   $('#clear-highlight').hidden = true;
 }

@@ -123,14 +123,16 @@
       <tr><td>Product flux held for pFBA</td><td>99.9% of optimum</td></tr>
       <tr><td>Product flux held for FVA</td><td>99% of optimum</td></tr>
       <tr><td>Pathways tested automatically</td><td>10 shortest per search</td></tr>
-      <tr><td>Solver</td><td>GLPK 5.0 (WebAssembly), simplex with presolve</td></tr>
+      <tr><td>Solver</td><td>GLPK 5.0 (WebAssembly), simplex without presolve (see Constraint-based analysis)</td></tr>
     </tbody>
   </table>
 
   <h2>GEM browser fields</h2>
   <p>Mass balanced counts reactions whose elemental and charge balance closes with the
   recorded formulas; balanceable additionally counts reactions that close after proton
-  adjustment. GAM and NGAM are growth-associated and non-growth-associated ATP
+  adjustment. The gap-filled / orphan count is the model's reactions carrying no gene
+  rule, excluding exchange, biomass and demand reactions; these entered the model without
+  gene evidence and their knockouts cannot be implemented as gene deletions. GAM and NGAM are growth-associated and non-growth-associated ATP
   maintenance, in mmol ATP gDW<sup>-1</sup> and mmol ATP gDW<sup>-1</sup> h<sup>-1</sup>;
   the NGAM source is recorded per model. Growth rate anchors give the per-axis interval
   recorded in the model release, in h<sup>-1</sup>; they are model-derived values, not
@@ -151,12 +153,78 @@
   no matching exchange in the chosen GEM are ignored when solving and counted in the
   editor.</p>
 
+  <h2 id="analysis">Constraint-based analysis</h2>
+  <p>The Analysis view runs on one GEM and one medium, with the same LP (S·v = 0, medium
+  lower bounds on exchanges, session bound edits applied) as Mode 2. A knockout sets a
+  reaction's bounds to [0, 0]; knockouts applied to the session are ordinary bound edits
+  and feed every other solve, including Mode 2. All solving is GLPK 5.0 simplex without
+  presolve: with the presolver on, this build of GLPK returned a solution violating a
+  closed exchange bound by 1.25×10<sup>-4</sup> on this dataset, so the presolver is off
+  and any solution violating a column bound by more than 10<sup>-6</sup> is refused and
+  reported as unsolved. Values within 10<sup>-9</sup> of zero print as zero.</p>
+
+  <h3>Product target</h3>
+  <p>The product is measured as its export: the exchange reaction of the extracellular
+  form when the GEM has one (whichever compartment form was picked), otherwise an added
+  demand, which is then the metabolite's only sink, so its minimum equals the guaranteed
+  net production. When the medium leaves the product's exchange open for uptake, a
+  negative floor means net uptake and the page says so.</p>
+
+  <h3>Knockout sweep</h3>
+  <p>The sweep closes each non-exchange, non-biomass reaction in turn and re-solves max
+  growth; with a product target set and the knockout not lethal, it also solves the
+  knockout's max product export and the product floor at biomass at or above the chosen
+  fraction of the knockout's own max growth. A reaction whose session bounds are already
+  [0, 0] is reported from the reference solve without a new LP and marked. Classes:
+  lethal (max growth at or below 10<sup>-6</sup> h<sup>-1</sup>, or no steady state),
+  raises product floor (floor above the reference floor by more than 10<sup>-6</sup>),
+  costly (max growth below 95% of reference), otherwise neutral. A knockout can be both
+  costly and floor-raising; the floor label wins and both numbers stay in the table.
+  A cancelled sweep keeps and exports the rows it computed, labelled as a partial sweep.</p>
+
+  <h3>Shadow prices and reduced costs</h3>
+  <p>The GLPK build used here does not expose LP dual values. Shadow prices are estimated
+  at the max-growth optimum by finite differences: the metabolite's mass-balance
+  right-hand side is moved from 0 to +10<sup>-3</sup> and the LP re-solved; the estimate
+  is the objective difference divided by the step, the marginal growth per unit of forced
+  net production. If the positive step is infeasible the negative step is tried and the
+  result labelled a left derivative; if both are infeasible (a conserved pool or blocked
+  metabolite) no finite estimate exists and the entry says so. Reduced costs derive from
+  these estimates as c<sub>j</sub> − Σ y<sub>i</sub> S<sub>ij</sub> over the reaction's
+  own metabolites. On a reference model the estimates matched exact HiGHS duals to eight
+  digits on non-degenerate rows; at a degenerate optimum a one-sided derivative can
+  differ from the solver's dual, and estimates within 10<sup>-6</sup> of zero should be
+  read as zero.</p>
+
+  <h3>Growth-coupling knockout search</h3>
+  <p>Growth-coupled means the minimum product export is positive when biomass is held at
+  or above a chosen fraction (default 90%) of the strain's own max growth. Equivalently,
+  max growth with product export capped at 10<sup>-6</sup> (decoupled growth) must fall
+  below the fraction times max growth. The search is greedy: candidates are the reactions
+  carrying flux above 10<sup>-6</sup> in a parsimonious decoupled optimum (by default
+  only reactions with a gene rule); each candidate is scored by the decoupled-to-max
+  growth ratio its knockout produces, subject to a viability floor on max growth (default
+  10% of the reference); the best is applied and the loop repeats up to K knockouts
+  (default 3). The search stops with a coupled verdict, or reports exactly why it
+  stopped: no growth, product not producible (a knockout never adds capability), no
+  viable candidate, no improvement, or K exhausted. A not-coupled verdict is a property
+  of this greedy search, not a proof that no coupling knockout set exists. Yields are
+  flux ratios at the floor solution (mmol product per mmol substrate uptake; C-mol basis
+  from the recorded formulas when both carry a carbon count) and are model predictions.</p>
+
+  <h3>Production envelope</h3>
+  <p>The envelope fixes biomass at each of N levels (default 24) from 0 to max growth and
+  solves max and min product export at each: 2N + 1 LPs. Points whose LP fails are
+  reported and not drawn. With a coupled knockout set from the search, a second envelope
+  is solved with those knockouts applied and overlaid.</p>
+
   <h2>Release scope</h2>
   <p>This release covers Mode 1 search, Mode 2 flux feasibility (pFBA and FVA on an
-  editable medium), the 3D union map and the GEM browser. Reaction knockout,
-  knockout-to-feasibility, shadow prices, growth-coupling, MOMA, over- and
-  under-expression designs, flux sampling and SBML export are not part of this release;
-  their controls appear only on the roadmap panel.</p>
+  editable medium), the 3D union map, the GEM browser, and the Analysis view
+  (single-reaction knockouts, shadow-price and reduced-cost estimates, greedy
+  growth-coupling search, production envelopes). MOMA, FSEOF over- and under-expression
+  designs, flux sampling and SBML export are not part of this release; their controls
+  appear only on the roadmap panel.</p>
 
   <h2>Provenance</h2>
   <p>Data release 2026-09-17. All computation runs in the browser; no query leaves the

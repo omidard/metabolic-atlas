@@ -43,8 +43,15 @@ export function loadMetIndex(onStatus) {
   return fetchJSON('data/met_index.json', 'metabolite name index', onStatus);
 }
 
-// ---- in-memory bound edits: acc -> rxnId -> {lb, ub} (Phase 2 analyses read these)
+// ---- in-memory bound edits: acc -> rxnId -> {lb, ub} (all analyses read these)
 const boundEdits = new Map();
+const editSubscribers = new Set();
+
+// Subscribers hear about every bound change (GEM-browser edit or knockout), so
+// each surface can mark its own solved results stale instead of asserting them
+// against bounds that no longer hold.
+export function onEditsChanged(cb) { editSubscribers.add(cb); return () => editSubscribers.delete(cb); }
+function notifyEdits(acc) { for (const cb of editSubscribers) cb(acc); }
 
 export function getEdit(acc, rxnId) {
   const m = boundEdits.get(acc);
@@ -54,20 +61,26 @@ export function getEdit(acc, rxnId) {
 export function setEdit(acc, rxnId, lb, ub) {
   if (!boundEdits.has(acc)) boundEdits.set(acc, new Map());
   boundEdits.get(acc).set(rxnId, { lb, ub });
+  notifyEdits(acc);
 }
 
 export function clearEdit(acc, rxnId) {
   const m = boundEdits.get(acc);
-  if (m) m.delete(rxnId);
+  if (m && m.delete(rxnId)) notifyEdits(acc);
 }
 
 export function clearAllEdits(acc) {
-  boundEdits.delete(acc);
+  if (boundEdits.delete(acc)) notifyEdits(acc);
 }
 
 export function editCount(acc) {
   const m = boundEdits.get(acc);
   return m ? m.size : 0;
+}
+
+export function listEdits(acc) {
+  const m = boundEdits.get(acc);
+  return m ? [...m.entries()].map(([rid, e]) => ({ rid, lb: e.lb, ub: e.ub })) : [];
 }
 
 // ---- shared formatting helpers

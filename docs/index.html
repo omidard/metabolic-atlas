@@ -21,6 +21,7 @@
   <nav aria-label="Main">
     <a class="navlink" id="nav-search" href="#/search" aria-current="page">Search map</a>
     <a class="navlink" id="nav-gems" href="#/gems">GEM browser</a>
+    <a class="navlink" id="nav-analysis" href="#/analysis">Analysis</a>
     <a class="navlink" href="methods.html">Methods &amp; limitations</a>
   </nav>
   <span class="release" id="release-line">35 GEMs · 4 species · data release 2026-09-17</span>
@@ -100,20 +101,28 @@
     <div class="phase2" style="margin-top:var(--s5)">
       <h3>Roadmap (not built yet)</h3>
       <ul>
-        <li>Single and double reaction knockout; knockout-to-feasibility search.</li>
-        <li>Shadow prices, growth-coupling, MOMA, over- and under-expression designs.</li>
+        <li>MOMA (linear) knockout predictions.</li>
+        <li>FSEOF over- and under-expression targets.</li>
         <li>Flux sampling; full SBML export.</li>
       </ul>
-      <p>None of these controls appear elsewhere in the interface until they compute real results.</p>
+      <p>None of these controls appear elsewhere in the interface until they compute real results.
+      Reaction knockouts, growth-coupling search, shadow prices and production envelopes are live
+      on the <a href="#/analysis">Analysis</a> view.</p>
     </div>
   </section>
 
   <!-- ================= GEM BROWSER VIEW ================= -->
   <section class="view" id="view-gems" aria-label="GEM browser" hidden></section>
+
+  <!-- ================= ANALYSIS VIEW ================= -->
+  <section class="view" id="view-analysis" aria-label="Constraint-based analysis" hidden>
+    <h1>Constraint-based analysis</h1>
+    <p class="sub" id="analysis-loading">Loading the analysis module…</p>
+  </section>
 </main>
 
 <footer>
-  <span>Metabolic Atlas · Mode 1 pathway search, Mode 2 flux feasibility, 3D union map, GEM browser.</span>
+  <span>Metabolic Atlas · Mode 1 pathway search, Mode 2 flux feasibility, knockout and coupling analysis, 3D union map, GEM browser.</span>
   <a href="methods.html">Methods &amp; limitations</a>
   <span id="footer-counts"></span>
 </footer>

@@ -3,7 +3,7 @@
 // per-pathway feasibility / pFBA / FVA runs. All solving happens in the GLPK
 // worker; every result carries its denominator; absent stays absent.
 
-import { loadGem, loadMedia, fmt } from './data.js';
+import { loadGem, loadMedia, fmt, onEditsChanged } from './data.js';
 import { getGLPK, maxGrowth, productTarget, pathwayFeasibility, pathwayPFBA, pathwayFVA, stepConstraints, diagnoseSteps, statusName, STEP_MIN_FLUX } from './fba.js';
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -56,17 +56,24 @@ export async function initMode2(panel, ctx) {
   function exToMet(exId) { return exId.replace(/^EX_/, ''); }
   function exName(exId) { return ctx.metName(exToMet(exId)) || ''; }
 
-  // A GEM or medium change makes every rendered feasibility claim stale:
-  // clear the chips and details rather than letting them assert the old setup.
-  function invalidateRun() {
+  // A GEM, medium or bound change makes every rendered feasibility claim
+  // stale: clear the chips and details rather than letting them assert the
+  // old setup.
+  function invalidateRun(why) {
     if (!state.run) return;
     state.run = null;
     state.runToken++;
     document.querySelectorAll('#results-body .feas-slot, #results-body .mode2-slot, #results-body .flux-slot')
       .forEach(el => { el.innerHTML = ''; });
     const s = document.querySelector('#results-summary .mode2-status');
-    if (s) s.innerHTML = '<span class="status">The GEM or medium changed; run the search again to re-test feasibility.</span>';
+    if (s) s.innerHTML = `<span class="status">${why || 'The GEM or medium changed'}; run the search again to re-test feasibility.</span>`;
   }
+
+  // Bound edits and knockouts made in the GEM browser or the Analysis view
+  // apply to every solve, so results rendered before them are stale.
+  onEditsChanged((acc) => {
+    if (acc === state.gemAcc) invalidateRun('Reaction bounds changed (edit or knockout)');
+  });
 
   // Effective bounds for a run: the working components, with the substrate
   // swapped in as carbon source when enabled and the GEM has its exchange.

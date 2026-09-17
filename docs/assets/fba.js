@@ -17,11 +17,16 @@ export async function getGLPK() {
   return _glpk;
 }
 
+// Test hook: the node verification harness injects the node build of the same
+// glpk.js 4.0.1 so the engine runs headless with real solves. Never called in
+// the browser.
+export function setGLPKInstance(g) { _glpk = g; }
+
 const BIG = 1e30;
 export const STEP_MIN_FLUX = 1e-4;   // mmol gDW-1 h-1 each pathway step must carry
 const OPT_TOL = 1e-6;
 
-function boundType(glpk, lb, ub) {
+export function boundType(glpk, lb, ub) {
   if (lb === ub) return glpk.GLP_FX;
   if (lb <= -BIG && ub >= BIG) return glpk.GLP_FR;
   if (lb <= -BIG) return glpk.GLP_UP;
@@ -71,15 +76,35 @@ export function buildLP(glpk, gem, mediumBounds, opts = {}) {
   };
 }
 
-async function solve(glpk, lp) {
-  const res = await glpk.solve(lp, { msglev: glpk.GLP_MSG_OFF, presol: true });
+// Solve WITHOUT the GLPK presolver: with presol on, glpk.js 4.0.1 can return
+// a bound-violating "optimal" solution (measured on this dataset: an exchange
+// closed at lb 0 carrying -1.25e-4, inflating max product by 1.7e-4 relative;
+// HiGHS confirmed that objective infeasible). Kept as a permanent guard: any
+// solution violating a column bound by more than BOUND_VIOL_TOL is refused and
+// reported as unsolved rather than rendered.
+const BOUND_VIOL_TOL = 1e-6;
+export async function solveLP(glpk, lp) {
+  const res = await glpk.solve(lp, { msglev: glpk.GLP_MSG_OFF, presol: false });
   const r = res.result;
-  return { status: r.status, optimal: r.status === glpk.GLP_OPT, z: r.z, vars: r.vars || {} };
+  const out = { status: r.status, optimal: r.status === glpk.GLP_OPT, z: r.z, vars: r.vars || {} };
+  if (out.optimal) {
+    for (const b of lp.bounds) {
+      const f = out.vars[b.name] ?? 0;
+      if (b.lb - f > BOUND_VIOL_TOL || f - b.ub > BOUND_VIOL_TOL) {
+        out.optimal = false;
+        out.status = -1;   // statusName maps this to a bound-violation message
+        break;
+      }
+    }
+  }
+  return out;
 }
+const solve = solveLP;
 
 // GLPK solution status, in words a reader can act on.
 export function statusName(code) {
   return {
+    [-1]: 'solver returned a bound-violating solution; refused',
     1: 'no feasible solution found',
     2: 'feasible, not proven optimal',
     3: 'infeasible',

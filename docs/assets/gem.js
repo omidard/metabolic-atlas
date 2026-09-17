@@ -102,6 +102,10 @@ function renderGem() {
       ${stat('Transporters', fmt.format(s.transporters), `of ${fmt.format(s.reactions)} reactions`)}
       ${stat('Mass balanced', fmt.format(s.mass_balanced), `of ${fmt.format(s.reactions)} reactions`)}
       ${stat('Balanceable', fmt.format(s.balanceable), `of ${fmt.format(s.reactions)} reactions`)}
+      ${stat('Without a gene (gap-filled / orphan)', s.gapfilled_orphan == null ? 'not computed' : fmt.format(s.gapfilled_orphan),
+        s.gapfilled_orphan == null
+          ? 'reactions with no gene rule'
+          : `of ${fmt.format(s.reactions)} reactions; no gene rule, excluding exchange, biomass and demand`)}
       ${stat('GAM', s.gam ?? 'not computed', 'mmol ATP gDW<sup>-1</sup>')}
       ${stat('NGAM', s.ngam ?? 'not computed', `mmol ATP gDW<sup>-1</sup> h<sup>-1</sup> · ${esc(s.ngam_source || 'source not recorded')}`)}
       ${stat('Biomass', `<span class="mono" style="font-size:var(--t-s)">${esc(s.biomass_id)}</span>`, `${fmt.format(nBiomass)} components`)}
