@@ -201,6 +201,7 @@
    "EX_h_e": -1000
   },
   "components": {
+   "_comment": "E. limosum HETEROTROPHIC anaerobic minimal medium. D-glucose sole carbon source. OBLIGATE ANAEROBE: EX_o2_e CLOSED (lb 0). Mineral/cofactor salt backbone non-limiting via real exchanges. Fermentation byproduct exits (acetate, formate, CO2, H2) left open. Mirrors Parageobacillus media_minimal_glucose.json structure but anaerobic (O2 removed). set_medium closes all EX_ lower bounds first then opens this set.",
    "EX_o2_e": 0,
    "EX_nh4_e": -1000,
    "EX_pi_e": -1000,
@@ -235,6 +236,7 @@
    "EX_h_e": -1000
   },
   "components": {
+   "_comment": "E. limosum AUTOTROPHIC / C1 minimal medium - METHANOL + CO2 (the mission substrate axis). Methanol feeds the methyl branch of the Wood-Ljungdahl pathway; CO2 is co-fed as the carbonyl-branch C1 acceptor (CODH_ACS). OBLIGATE ANAEROBE: EX_o2_e CLOSED. Acetate/formate are the expected products and remain open exits. H2 left open (can be evolved or consumed). NO sugar. Mirror of the heterotrophic salt backbone with methanol as carbon/energy source.",
    "EX_o2_e": 0,
    "EX_nh4_e": -1000,
    "EX_pi_e": -1000,
@@ -269,6 +271,7 @@
    "EX_h_e": -1000
   },
   "components": {
+   "_comment": "E. limosum AUTOTROPHIC minimal medium - H2 + CO2 (pure chemolithoautotrophic acetogenesis via the Wood-Ljungdahl pathway). H2 is the sole electron donor (oxidized by a [FeFe]/electron-bifurcating hydrogenase + the Ech-type ECHH_0 in the draft), CO2 is the sole carbon source (reduced via the methyl + carbonyl branches to acetyl-CoA). OBLIGATE ANAEROBE: EX_o2_e CLOSED. Acetate is the dominant product (open exit). NO organic carbon. Energy conservation is chemiosmotic (Rnf/Ech + ATP synthase) - acetogen energetics flagged for idea-lab review (Rnf reaction not explicit in the draft).",
    "EX_o2_e": 0,
    "EX_nh4_e": -1000,
    "EX_pi_e": -1000,

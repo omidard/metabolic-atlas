@@ -1,10 +1,14 @@
-// Metabolic Atlas: main controller. Loads the registry + union graph, wires the
-// substrate/product pickers, species filter, Mode-1 search, the 3D map and the
-// GEM browser. Absent values render as absent; every count carries its denominator.
+// Metabolic Atlas: main controller. One connected workflow over a persistent
+// context (substrate -> product, GEM, medium): 1 Discover (pathway search +
+// union map), 2 Model (GEM dashboard + browser), 3 Simulate (flux feasibility),
+// 4 Engineer (strain-design analyses). Absent values render as absent; every
+// count carries its denominator.
 
 import { loadIndex, loadGraph, loadGraphMeta, loadMetIndex, fmt, downloadBlob, csvEscape } from './data.js';
-import { searchPathways, carriersBySpecies, DEFAULTS } from './search.js';
+import { searchPathways, carriersBySpecies, popcount } from './search.js';
 import { initGemView, openReactionInBrowser, setIndexData } from './gem.js';
+import { getContext, setContext, onContext, initContextBar } from './context.js';
+import { GROUP_COLORS, chartBlock, hBars, histogram, heatmap, presenceMatrix } from './charts.js';
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const $ = (sel) => document.querySelector(sel);
@@ -26,33 +30,15 @@ function setAccent(speciesName) {
   r.setProperty('--accent-wash', t.wash);
 }
 
-// ---- pathway-group colours: 13 distinct hues + neutral for Other
-function groupColorMap(groups) {
-  const named = groups.filter(g => g !== 'Other');
-  const out = {};
-  named.forEach((g, i) => {
-    const h = Math.round(i * 360 / named.length);
-    out[g] = hslToHex(h, 52, 40);
-  });
-  out['Other'] = '#98948C';
-  return out;
-}
-function hslToHex(h, s, l) {
-  s /= 100; l /= 100;
-  const k = n => (n + h / 30) % 12;
-  const a = s * Math.min(l, 1 - l);
-  const f = n => l - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)));
-  return '#' + [f(0), f(8), f(4)].map(x => Math.round(255 * x).toString(16).padStart(2, '0')).join('');
-}
-
 // ---- app state
-let INDEX = null, GRAPH = null, META = null, GROUP_COLORS = null;
+let INDEX = null, GRAPH = null, META = null;
 let MET_INDEX = null;                    // {mid: {name, kegg, chebi}} or null when unavailable
 let metList = [];                        // [{mid, name, kegg, comp, group, cur}]
 let map = null;                          // map3d api or null
 let selectedSpecies = new Set();
 let lastResults = null;
 let MODE2 = null;                        // lazily imported mode2 module api or null
+let mode2Loading = false;
 let highlightedIdx = null;               // pathway index currently on the map
 
 // Display name for a metabolite id: standard name when the index carries one,
@@ -73,6 +59,22 @@ function metLabelHTML(mid) {
 (async function boot() {
   route();
   window.addEventListener('hashchange', route);
+  $('#sim-run').addEventListener('click', () => {
+    if (MODE2 && lastResults) MODE2.runFeasibility(lastResults);
+  });
+  // endpoints set elsewhere (the Engineer pickers) reflect back into the
+  // Discover inputs, so the two stages never show different context values
+  onContext((c, changed) => {
+    for (const kind of ['sub', 'prod']) {
+      if (changed.includes(kind) && c[kind] !== pickerState[kind].mid) {
+        pickerState[kind].mid = c[kind];
+        const input = $(`#${kind}-input`);
+        if (input) input.value = c[kind] ? (metName(c[kind]) ? `${metName(c[kind])} (${c[kind]})` : c[kind]) : '';
+        if (MODE2) MODE2.onEndpointsChange(pickerState.sub.mid, pickerState.prod.mid);
+      }
+    }
+    refreshSimUI();
+  });
 
   try {
     INDEX = await loadIndex();
@@ -81,13 +83,17 @@ function metLabelHTML(mid) {
     return;
   }
   setIndexData(INDEX);
-  initGemView($('#view-gems'), INDEX, { onAccentChange: setAccent });
+  initGemView($('#view-model'), INDEX, { onAccentChange: setAccent });
   buildSpeciesChips();
+  initContextBar($('#context-bar'), {
+    metLabel: (mid) => metName(mid) || mid,
+    gemLabel: (acc) => acc,
+  });
 
   try {
     [GRAPH, META] = await Promise.all([loadGraph(), loadGraphMeta()]);
   } catch (e) {
-    $('#dataset-line').textContent = `Could not load the union map (${e.message}). Reload the page to retry; the GEM browser works without it.`;
+    $('#dataset-line').textContent = `Could not load the union map (${e.message}). Reload the page to retry; the Model stage works without it.`;
     $('#map-status').textContent = 'Union map unavailable. Reload the page to retry.';
     return;
   }
@@ -98,7 +104,6 @@ function metLabelHTML(mid) {
     MET_INDEX = null;   // pickers fall back to id-only matching and say so
   }
 
-  GROUP_COLORS = groupColorMap(GRAPH.groups);
   metList = Object.entries(GRAPH.metabolites).map(([mid, m]) => {
     const x = MET_INDEX && MET_INDEX[mid];
     const name = (x && x.name && x.name !== mid) ? x.name : (m.n !== mid ? m.n : '');
@@ -119,36 +124,60 @@ function metLabelHTML(mid) {
   $('#run-search').disabled = false;
   buildExamples();
   $('#search-form').addEventListener('submit', (e) => { e.preventDefault(); runSearch(); });
-  wireModeToggle();
+  refreshSimUI();
+  renderAtlasOverview();
 
   initMap();
 })();
 
-// ================= routing =================
-function route() {
-  const h = location.hash || '#/search';
-  const onGems = h.startsWith('#/gems');
-  const onAnalysis = h.startsWith('#/analysis');
-  $('#view-search').hidden = onGems || onAnalysis;
-  $('#view-gems').hidden = !onGems;
-  $('#view-analysis').hidden = !onAnalysis;
-  $('#nav-search').setAttribute('aria-current', (onGems || onAnalysis) ? 'false' : 'page');
-  $('#nav-gems').setAttribute('aria-current', onGems ? 'page' : 'false');
-  $('#nav-analysis').setAttribute('aria-current', onAnalysis ? 'page' : 'false');
-  if (onAnalysis) activateAnalysis();
+// ================= routing: 4 stages + legacy aliases =================
+function currentStage() {
+  const stageOfHash = [
+    ['#/discover', 'discover'], ['#/search', 'discover'],
+    ['#/model', 'model'], ['#/gems', 'model'],
+    ['#/simulate', 'simulate'],
+    ['#/engineer', 'engineer'], ['#/analysis', 'engineer'],
+  ];
+  const h = location.hash || '#/discover';
+  for (const [prefix, stage] of stageOfHash) if (h.startsWith(prefix)) return stage;
+  return 'discover';
 }
 
-// ================= analysis view (lazy) =================
+function route() {
+  const stage = currentStage();
+  for (const s of ['discover', 'model', 'simulate', 'engineer']) {
+    $(`#view-${s}`).hidden = s !== stage;
+    $(`#nav-${s}`).setAttribute('aria-current', s === stage ? 'page' : 'false');
+  }
+  dockWorkbench(stage);
+  if (stage === 'engineer') activateAnalysis();
+  if (stage === 'simulate') activateSimulate();
+}
+
+// The map pane and the pathway-results panel are one pair of live DOM nodes,
+// docked into Discover or Simulate depending on the stage, so highlights,
+// feasibility chips and listeners survive the stage change.
+function dockWorkbench(stage) {
+  const wb = $('#workbench');
+  if (!wb) return;
+  if (stage === 'simulate') {
+    $('#sim-dock').appendChild(wb);
+  } else if (stage === 'discover' && wb.parentElement !== $('#view-discover')) {
+    $('#view-discover').insertBefore(wb, $('#atlas-overview'));
+  }
+}
+
+// ================= Engineer view (lazy) =================
 let ANALYSIS = null, analysisLoading = false;
 async function activateAnalysis() {
   if (ANALYSIS) { ANALYSIS.setActive(true); return; }
   if (analysisLoading) return;
   analysisLoading = true;
-  const section = $('#view-analysis');
+  const section = $('#view-engineer');
   try {
     for (let i = 0; i < 40 && !INDEX; i++) await new Promise(r => setTimeout(r, 200));   // boot may still be fetching the index
     if (!INDEX) {
-      section.innerHTML = '<h1>Constraint-based analysis</h1><p class="status error">The GEM index has not loaded; reload the page and open Analysis again.</p>';
+      section.innerHTML = '<h1>Engineer</h1><p class="status error">The GEM index has not loaded; reload the page and open Engineer again.</p>';
       return;
     }
     const mod = await import('./analysis.js');
@@ -156,20 +185,20 @@ async function activateAnalysis() {
       index: INDEX,
       metName,
       setAccent,
-      getEndpoints: () => ({ sub: pickerState.sub.mid, prod: pickerState.prod.mid }),
+      getEndpoints: () => ({ sub: getContext().sub, prod: getContext().prod }),
       mapAvailable: () => !!map,
       showReactionsOnMap: (rids) => {
         if (!map) return null;
         const res = map.highlightReactions(rids, accentInk());
-        location.hash = '#/search';
+        location.hash = '#/discover';
         $('#clear-highlight').hidden = false;
         return res;
       },
     });
     ANALYSIS.setActive(true);
   } catch (e) {
-    section.innerHTML = `<h1>Constraint-based analysis</h1>
-      <p class="status error">The analysis module failed to load (${esc(e.message)}). Reload the page to retry; search and the GEM browser keep working.</p>`;
+    section.innerHTML = `<h1>Engineer</h1>
+      <p class="status error">The analysis module failed to load (${esc(e.message)}). Reload the page to retry; Discover and Model keep working.</p>`;
   } finally {
     analysisLoading = false;
   }
@@ -261,6 +290,7 @@ function setupPicker(kind) {
     pickerState[kind].mid = mid;
     input.value = metName(mid) ? `${metName(mid)} (${mid})` : mid;
     close();
+    setContext(kind === 'sub' ? { sub: mid } : { prod: mid });
     if (MODE2) MODE2.onEndpointsChange(pickerState.sub.mid, pickerState.prod.mid);
   }
 
@@ -289,6 +319,7 @@ function setupPicker(kind) {
 function setPickerValue(kind, mid) {
   pickerState[kind].mid = mid;
   $(`#${kind}-input`).value = metName(mid) ? `${metName(mid)} (${mid})` : mid;
+  setContext(kind === 'sub' ? { sub: mid } : { prod: mid });
   if (MODE2) MODE2.onEndpointsChange(pickerState.sub.mid, pickerState.prod.mid);
 }
 
@@ -314,12 +345,7 @@ function buildExamples() {
   }
 }
 
-// ================= search (Mode 1 enumeration; Mode 2 adds feasibility) =================
-function currentMode() {
-  const r = document.querySelector('input[name="mode"]:checked');
-  return r ? r.value : '1';
-}
-
+// ================= search (Mode 1 enumeration; feasibility is stage 3) =================
 function runSearch() {
   const sub = pickerState.sub.mid, prod = pickerState.prod.mid;
   const summary = $('#results-summary');
@@ -332,14 +358,6 @@ function runSearch() {
     summary.innerHTML = '<span class="status">Substrate and product are the same metabolite; nothing to search.</span>';
     return;
   }
-  const mode = currentMode();
-  if (mode === '2' && MODE2) {
-    const why = MODE2.notReadyReason();
-    if (why) {
-      summary.innerHTML = `<span class="status">${esc(why)}</span>`;
-      return;
-    }
-  }
   summary.textContent = 'Searching…';
   setTimeout(() => {
     const t0 = performance.now();
@@ -349,7 +367,7 @@ function runSearch() {
     renderResults(res, sub, prod, ms);
     if (res.pathways.length && map) showPathwayOnMap(res.pathways[0], 0, { animate: true });
     else clearMapHighlight();
-    if (mode === '2' && MODE2) MODE2.runFeasibility(lastResults);
+    refreshSimUI();
   }, 30);
 }
 
@@ -413,6 +431,41 @@ function renderResults(res, sub, prod, ms) {
   const term = document.createElement('div');
   term.innerHTML = terminationLine(termination, pathways.length);
   body.appendChild(term);
+
+  body.appendChild(searchCharts(pathways));
+}
+
+// Two designed charts over the current result set: the pathway-length
+// distribution and the strain-presence overview matrix.
+function searchCharts(pathways) {
+  const wrap = document.createElement('div');
+  wrap.className = 'card';
+
+  const byLen = new Map();
+  for (const pw of pathways) byLen.set(pw.len, (byLen.get(pw.len) || 0) + 1);
+  const lens = [...byLen.keys()].sort((a, b) => a - b);
+  const bins = [];
+  for (let L = lens[0]; L <= lens[lens.length - 1]; L++) bins.push({ x: L, count: byLen.get(L) || 0 });
+  const lenChart = chartBlock(
+    `Pathway length distribution (${fmt.format(pathways.length)} pathways)`,
+    histogram(bins, { width: 330, height: 120, xLabel: 'steps' }));
+
+  const nRows = Math.min(pathways.length, 15);
+  const rows = pathways.slice(0, nRows);
+  const rowLabels = rows.map((pw, i) => `#${i + 1} · ${pw.len} step${pw.len > 1 ? 's' : ''}`);
+  const colLabels = META.accs.map(a => `${a.acc} (${a.sp})`);
+  const colColors = META.accs.map(a => (SPECIES_TOKENS[a.sp] || DEFAULT_TOKENS).accent);
+  const cells = rows.map(pw => META.accs.map((a, j) => ((pw.mask >> BigInt(j)) & 1n) === 1n));
+  const legend = INDEX.species.map(sp =>
+    `<span class="ch-lg"><span class="ch-sw" style="background:${sp.accent}"></span>${esc(sp.name)} (${sp.n})</span>`).join('');
+  const presChart = chartBlock(
+    `Strain presence per pathway (${nRows} of ${fmt.format(pathways.length)} pathways shown × ${META.accs.length} GEMs)`,
+    `<div class="chartwrap">${presenceMatrix(rowLabels, colLabels, cells, colColors, { cellW: 12, labelW: 86 })}</div>
+     <div class="ch-legend">${legend}</div>`,
+    'A filled cell: the GEM contains at least one reaction for every step. Flux feasibility under a medium is the Simulate stage.');
+
+  wrap.innerHTML = lenChart + presChart;
+  return wrap;
 }
 
 function pathwayCard(pw, idx) {
@@ -452,7 +505,7 @@ function pathwayCard(pw, idx) {
     stepDiv.innerHTML = `<div class="step-mets">Step ${i + 1}: ${fromNm ? esc(fromNm) + ' ' : ''}<span class="mono">${esc(st.from)}</span> → ${toNm ? esc(toNm) + ' ' : ''}<span class="mono">${esc(st.to)}</span></div>` +
       shown.map(r => `
         <div class="rxn-alt" data-rxn="${esc(r.id)}">
-          <button class="rid btn small" type="button" data-rid="${esc(r.id)}" title="Open in GEM browser">${esc(r.id)}</button>
+          <button class="rid btn small" type="button" data-rid="${esc(r.id)}" title="Open in the Model stage">${esc(r.id)}</button>
           ${r.dir === 'rev' ? '<span class="ec">(reverse of written direction)</span>' : ''}
           ${r.ec.length ? `<span class="ec">EC ${esc(r.ec.join(', '))}</span>` : ''}
           <span class="rn">${esc(r.name || '')}</span>
@@ -480,11 +533,11 @@ function pathwayCard(pw, idx) {
   }
   const note = document.createElement('p');
   note.className = 'termination';
-  note.textContent = 'A filled cell means the strain’s GEM contains at least one reaction for every step. Whether the strain’s own bounds and a medium permit flux through every step is a Mode 2 check.';
+  note.textContent = 'A filled cell means the strain’s GEM contains at least one reaction for every step. Whether the strain’s own bounds and a medium permit flux through every step is a Simulate check.';
   matrix.appendChild(note);
   bodyEl.appendChild(matrix);
 
-  // Mode-2 feasibility detail slot (filled by mode2.js when a run covers this card)
+  // Feasibility detail slot (filled by the Simulate stage when a run covers this card)
   const m2slot = document.createElement('div');
   m2slot.className = 'mode2-slot';
   bodyEl.appendChild(m2slot);
@@ -512,7 +565,7 @@ function pathwayCard(pw, idx) {
 
   bodyEl.querySelectorAll('button.rid').forEach(b => b.addEventListener('click', () => {
     openReactionInBrowser(b.dataset.rid);
-    location.hash = '#/gems';
+    location.hash = '#/model';
   }));
   return d;
 }
@@ -525,7 +578,7 @@ function exportPathway(pw, idx, kind) {
     substrate: lastResults.sub, product: lastResults.prod,
     species_filter: lastResults.species, rank: idx + 1, steps: pw.len,
     carriers: `${pw.carriers} of ${META.accs.length} GEMs`,
-    note: 'Mode 1 enzyme presence; flux feasibility under a medium is a Mode 2 check and is not included in this export.',
+    note: 'Enzyme-presence pathway; flux feasibility under a medium is a Simulate-stage check and is not included in this export.',
   };
   if (kind === 'json') {
     downloadBlob(JSON.stringify({
@@ -545,6 +598,96 @@ function exportPathway(pw, idx, kind) {
     ];
     downloadBlob(lines.join('\n'), `pathway_${idx + 1}_${lastResults.sub}_to_${lastResults.prod}.csv`, 'text/csv');
   }
+}
+
+// ================= Atlas overview (Discover, below the workbench) =================
+function renderAtlasOverview() {
+  const host = $('#atlas-overview');
+  if (!host || !GRAPH || !META) return;
+
+  // model size per species: mean over each species' GEMs, from the registry
+  const bySp = new Map();
+  for (const g of INDEX.gems) {
+    if (!bySp.has(g.species)) bySp.set(g.species, []);
+    bySp.get(g.species).push(g);
+  }
+  const sizeChart = (key, label) => {
+    const rows = [...bySp.entries()].map(([sp, gems]) => {
+      const vals = gems.map(g => g[key]);
+      const mean = Math.round(vals.reduce((a, b) => a + b, 0) / vals.length);
+      return {
+        label: sp.split(' ')[0][0] + '. ' + sp.split(' ').slice(1).join(' '),
+        value: mean,
+        color: (SPECIES_TOKENS[sp] || DEFAULT_TOKENS).accent,
+        note: `(n=${gems.length}, ${fmt.format(Math.min(...vals))} to ${fmt.format(Math.max(...vals))})`,
+      };
+    });
+    return chartBlock(`${label} per GEM, mean per species (${INDEX.gems.length} GEMs)`,
+      hBars(rows, { showPct: false }));
+  };
+
+  // reaction sharing: how many of the 35 GEMs carry each union reaction
+  const carrierCounts = new Array(META.accs.length + 1).fill(0);
+  let nWithMask = 0;
+  for (const id of Object.keys(META.rxns)) {
+    const m = META.rxns[id].m;
+    if (m == null) continue;
+    nWithMask++;
+    carrierCounts[popcount(BigInt('0x' + m))]++;
+  }
+  // carrierCounts is dense (pre-filled with 0 for every carrier count), so an
+  // index read is always a measured count, never an absent lookup.
+  const nCore = carrierCounts.slice(34).reduce((a, b) => a + b, 0);
+  const nSingle = carrierCounts[1];
+  const shareBins = [];
+  for (let k = 1; k <= META.accs.length; k++) {
+    shareBins.push({
+      x: k, count: carrierCounts[k],
+      color: k >= 34 ? 'var(--accent)' : (k === 1 ? '#98948C' : 'rgba(42,98,176,0.55)'),
+      tick: (k === 1 || k % 5 === 0 || k === META.accs.length),
+    });
+  }
+  const nZero = carrierCounts[0];
+  const shareChart = chartBlock(
+    `Reaction sharing across the ${META.accs.length} GEMs (${fmt.format(nWithMask)} union reactions)`,
+    `<div class="chartwrap">${histogram(shareBins, { width: 560, height: 150, xLabel: 'number of GEMs carrying the reaction', barLabel: (b) => b.x === 1 || b.x >= 34 })}</div>`,
+    `Core (in 34 or 35 GEMs): ${fmt.format(nCore)} of ${fmt.format(nWithMask)} · in a single GEM: ${fmt.format(nSingle)} of ${fmt.format(nWithMask)}.` +
+    (nZero ? ` ${fmt.format(nZero)} of ${fmt.format(nWithMask)} union reactions are carried by no individual GEM in this release and are not drawn (methods page, union map).` : ''));
+
+  // pathway-group coverage: species x group, union reactions carried by >= 1 GEM
+  const groups = GRAPH.groups;
+  const spNames = INDEX.species.map(s => s.name);
+  const counts = spNames.map(() => groups.map(() => 0));
+  const groupTotals = groups.map(() => 0);
+  for (const r of GRAPH.reactions) {
+    const gi = groups.indexOf(r.g);
+    if (gi < 0) continue;
+    groupTotals[gi]++;
+    for (const sp of r.sp) {
+      const si = spNames.indexOf(sp);
+      if (si >= 0) counts[si][gi]++;
+    }
+  }
+  const heatChart = chartBlock(
+    `Pathway-group coverage by species (union reactions per group, ${fmt.format(GRAPH.n_reactions)} total)`,
+    `<div class="chartwrap">${heatmap(
+      spNames.map(sp => sp.split(' ')[0][0] + '. ' + sp.split(' ').slice(1).join(' ')),
+      groups.map((g, i) => `${g} (${fmt.format(groupTotals[i])})`),
+      counts, { cellW: 52, labelW: 150 })}</div>`,
+    'A cell counts the union reactions of the group carried by at least one GEM of the species; the column header carries the group’s union total.');
+
+  host.innerHTML = `
+    <h2>Atlas overview</h2>
+    <p class="sub">The 35 models and the union network they share, before any search.</p>
+    <div class="chart-grid">
+      ${sizeChart('reactions', 'Reactions')}
+      ${sizeChart('genes', 'Genes')}
+      ${sizeChart('metabolites', 'Metabolites')}
+    </div>
+    <div class="chart-grid">
+      ${shareChart}
+      ${heatChart}
+    </div>`;
 }
 
 // ================= map highlight orchestration =================
@@ -567,15 +710,15 @@ function clearMapHighlight() {
   $('#clear-highlight').hidden = true;
 }
 
-// ================= Mode 2 module (lazy) =================
-async function activateMode2() {
-  if (MODE2) { MODE2.setActive(true); return; }
-  const panel = $('#mode2-panel');
-  panel.hidden = false;
-  panel.innerHTML = '<div class="card"><span class="status">Loading the flux engine (GLPK-WASM, about 250 kB)…</span></div>';
+// ================= Simulate stage (lazy flux engine) =================
+async function activateSimulate() {
+  refreshSimUI();
+  if (MODE2 || mode2Loading) return;
+  mode2Loading = true;
+  const hostEl = $('#mode2-host');
   try {
     const mod = await import('./mode2.js');
-    MODE2 = await mod.initMode2(panel, {
+    MODE2 = await mod.initMode2(hostEl, {
       index: INDEX, graphMeta: META,
       metName, metLabelHTML, setAccent,
       getEndpoints: () => ({ sub: pickerState.sub.mid, prod: pickerState.prod.mid }),
@@ -583,26 +726,33 @@ async function activateMode2() {
       showFluxOnMap: (pw, i, weights) => showPathwayOnMap(pw, i, { animate: false, weights }),
       resultsSummary: () => $('#results-summary'),
       speciesTokens: SPECIES_TOKENS,
+      onStateChange: () => refreshSimUI(),
     });
     MODE2.onEndpointsChange(pickerState.sub.mid, pickerState.prod.mid);
-    MODE2.setActive(true);
   } catch (e) {
-    panel.innerHTML = `<div class="card"><p class="status error">Mode 2 is unavailable: the flux engine failed to load (${esc(e.message)}).
-      Reload the page to retry. Mode 1 search keeps working.</p></div>`;
-    const m1 = document.querySelector('input[name="mode"][value="1"]');
-    if (m1) m1.checked = true;
+    hostEl.innerHTML = `<div class="card"><p class="status error">The flux engine failed to load (${esc(e.message)}).
+      Reload the page to retry. Discover and Model keep working.</p></div>`;
+  } finally {
+    mode2Loading = false;
+    refreshSimUI();
   }
 }
 
-function wireModeToggle() {
-  document.querySelectorAll('input[name="mode"]').forEach(r => {
-    r.addEventListener('change', () => {
-      const m2 = currentMode() === '2';
-      $('#mode2-panel').hidden = !m2;
-      if (m2) activateMode2();
-      else if (MODE2) MODE2.setActive(false);
-    });
-  });
+function refreshSimUI() {
+  const btn = $('#sim-run'), status = $('#sim-status');
+  if (!btn) return;
+  const disable = (msg) => { btn.disabled = true; status.innerHTML = msg; };
+  if (!GRAPH || !META) return disable('The dataset is still loading.');
+  if (!lastResults || !lastResults.res.pathways.length) {
+    return disable('No pathways to test yet: run a substrate to product search in <a href="#/discover">Discover</a> first.');
+  }
+  if (mode2Loading || !MODE2) return disable('The flux engine is loading…');
+  const why = MODE2.notReadyReason();
+  if (why) return disable(esc(why));
+  const n = lastResults.res.pathways.length;
+  btn.disabled = false;
+  status.innerHTML = `${fmt.format(n)} pathway${n > 1 ? 's' : ''} from ${metLabelHTML(lastResults.sub)}
+    to ${metLabelHTML(lastResults.prod)} ready to test; the shortest ${Math.min(10, n)} of ${fmt.format(n)} are tested automatically, the rest per card.`;
 }
 
 // ================= 3D map =================
@@ -627,6 +777,10 @@ async function initMap() {
     statusEl.hidden = true;
     $('#map-hud').hidden = false;
     buildLegend();
+    // currency metabolites start hidden so the three shells read as structure;
+    // the HUD checkbox brings them back.
+    map.setCurrencyVisible(false);
+    $('#toggle-currency').checked = false;
     $('#toggle-currency').addEventListener('change', (e) => map.setCurrencyVisible(e.target.checked));
     $('#toggle-labels').addEventListener('change', (e) => map.setLabelsVisible(e.target.checked));
     $('#reset-view').addEventListener('click', () => map.resetView());
@@ -641,13 +795,18 @@ async function initMap() {
     statusEl.innerHTML = `${esc(reason)}<br>
       The union map holds ${fmt.format(GRAPH.n_metabolites)} metabolites and
       ${fmt.format(GRAPH.n_reactions)} reactions on three compartment shells.
-      Pathway search and the GEM browser work without the 3D view.`;
+      Pathway search and the Model stage work without the 3D view.`;
   }
 }
 
 function buildLegend() {
   const el = $('#map-legend');
   el.hidden = false;
-  el.innerHTML = '<span class="lg" style="font-weight:600">Pathway groups:</span>' + GRAPH.groups.map(g =>
-    `<span class="lg"><span class="swatch" style="background:${GROUP_COLORS[g]}"></span>${esc(g)}</span>`).join('');
+  el.innerHTML =
+    '<span class="lg" style="font-weight:600">Shells:</span>' +
+    '<span class="lg">outer = extracellular + exchange</span>' +
+    '<span class="lg">middle = periplasm</span>' +
+    '<span class="lg">inner = cytosol</span>' +
+    '<span class="lg" style="font-weight:600;margin-left:6px">Groups:</span>' + GRAPH.groups.map(g =>
+      `<span class="lg"><span class="swatch" style="background:${GROUP_COLORS[g] || '#98948C'}"></span>${esc(g)}</span>`).join('');
 }

@@ -1,7 +1,11 @@
-// GEM browser: stats, growth anchors, biomass, reactions (editable bounds),
-// metabolites, genes with sequences. One GEM loaded at a time, lazily.
+// Model stage: the chosen GEM as a dashboard (composition, balance, biomass,
+// maintenance, growth anchors) over the browsable tables (reactions with
+// editable bounds, metabolites, genes with sequences). One GEM at a time,
+// lazily; the choice is written to the session context and carries forward.
 
 import { loadGem, loadSeqs, getEdit, setEdit, clearEdit, clearAllEdits, editCount, fmt, downloadBlob, csvEscape, DATA_RELEASE } from './data.js';
+import { getContext, setContext, onContext } from './context.js';
+import { GROUP_COLORS, NEUTRAL_BAR, chartBlock, hBars, stackBar, donut, fractionBar, intervals, statCard, fitWidth } from './charts.js';
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
@@ -19,18 +23,23 @@ export function initGemView(container, indexData, opts = {}) {
   root = container;
   onAccentChange = opts.onAccentChange || null;
   root.innerHTML = `
-    <h1>GEM browser</h1>
-    <p class="sub">35 genome-scale models across 4 species. Choose a model to view its
-    statistics, growth anchors, biomass formulation, reactions, metabolites and gene
-    sequences. Lower and upper bounds are editable in the reactions table; edits are held
-    in memory for this session, apply to every solve (Mode 2 and the Analysis view), and
-    are written into the SBML and COBRA JSON exports.</p>
+    <h1>Which model is this, and what is in it?</h1>
+    <p class="sub">35 genome-scale models across 4 species. Choosing a model here carries it into
+    Simulate and Engineer. The dashboard summarises composition, mass balance, biomass and growth
+    anchors; the tables below it hold every reaction (bounds editable), metabolite and gene
+    sequence. Session bound edits apply to every solve and are written into the SBML and COBRA
+    JSON exports.</p>
     <div class="gem-toolbar">
       <div class="field">
         <label for="gem-select">Model (35 GEMs)</label>
         <select id="gem-select"><option value="">Choose a GEM…</option></select>
       </div>
       <span id="gem-status" class="status" role="status" aria-live="polite"></span>
+    </div>
+    <div class="card empty-state" id="gem-empty">
+      <strong>No model chosen yet.</strong>
+      <p style="margin:var(--s2) 0 0">Choose one of the 35 GEMs above, or pick a strain from a
+      Discover result. The dashboard renders from the model file (about 1 MB, loaded once).</p>
     </div>
     <div id="gem-body" hidden></div>`;
   statusEl = root.querySelector('#gem-status');
@@ -53,6 +62,16 @@ export function initGemView(container, indexData, opts = {}) {
     gemSelect.appendChild(og);
   }
   gemSelect.addEventListener('change', () => selectGem(gemSelect.value));
+
+  // context sync: a GEM chosen in Simulate or Engineer appears here too
+  onContext((c, changed) => {
+    if (changed.includes('gem') && (c.gem || '') !== (acc || '') && (c.gem || '') !== gemSelect.value) {
+      gemSelect.value = c.gem || '';
+      selectGem(c.gem || '');
+    }
+  });
+  const c0 = getContext();
+  if (c0.gem) { gemSelect.value = c0.gem; selectGem(c0.gem); }
 }
 
 export function openReactionInBrowser(rxnId) {
@@ -67,7 +86,8 @@ export function openReactionInBrowser(rxnId) {
 
 async function selectGem(newAcc) {
   const body = root.querySelector('#gem-body');
-  if (!newAcc) { body.hidden = true; gem = null; acc = null; return; }
+  const empty = root.querySelector('#gem-empty');
+  if (!newAcc) { body.hidden = true; if (empty) empty.hidden = false; gem = null; acc = null; setContext({ gem: null }); return; }
   try {
     statusEl.textContent = `Loading GEM ${newAcc} (about 1 MB)…`;
     statusEl.classList.remove('error');
@@ -77,20 +97,21 @@ async function selectGem(newAcc) {
     pendingRxnFilter = null;
     statusEl.textContent = `${g.species} · ${newAcc}`;
     if (onAccentChange) onAccentChange(g.species);
+    setContext({ gem: newAcc });
     renderGem();
     body.hidden = false;
+    if (empty) empty.hidden = true;
   } catch (e) {
     statusEl.textContent = `Could not load GEM ${newAcc}: ${e.message}. Check the connection and choose the model again.`;
     statusEl.classList.add('error');
     body.hidden = true;
+    if (empty) empty.hidden = false;
   }
 }
 
 function renderGem() {
   const s = gem.stats;
   const body = root.querySelector('#gem-body');
-  const growthRows = Object.entries(gem.growth || {}).map(([axis, r]) =>
-    `<tr><td>${esc(axis)}</td><td class="mono">${r?.[0] ?? 'not computed'}</td><td class="mono">${r?.[1] ?? 'not computed'}</td></tr>`).join('');
   const nBiomass = Object.keys(gem.biomass || {}).length;
 
   body.innerHTML = `
@@ -100,31 +121,7 @@ function renderGem() {
       <button class="btn small" id="gem-export-cobra" type="button">Export COBRA JSON</button>
       <span class="status" id="gem-export-status" role="status" aria-live="polite">Whole-model exports; session bound edits are written into the file.</span>
     </div>
-    <div class="statgrid">
-      ${stat('Genes', fmt.format(s.genes), 'in model')}
-      ${stat('Reactions', fmt.format(s.reactions), 'in model')}
-      ${stat('Metabolites', fmt.format(s.metabolites), 'in model')}
-      ${stat('Exchanges', fmt.format(s.exchanges), `of ${fmt.format(s.reactions)} reactions`)}
-      ${stat('Transporters', fmt.format(s.transporters), `of ${fmt.format(s.reactions)} reactions`)}
-      ${stat('Mass balanced', fmt.format(s.mass_balanced), `of ${fmt.format(s.reactions)} reactions`)}
-      ${stat('Balanceable', fmt.format(s.balanceable), `of ${fmt.format(s.reactions)} reactions`)}
-      ${stat('Without a gene (gap-filled / orphan)', s.gapfilled_orphan == null ? 'not computed' : fmt.format(s.gapfilled_orphan),
-        s.gapfilled_orphan == null
-          ? 'reactions with no gene rule'
-          : `of ${fmt.format(s.reactions)} reactions; no gene rule, excluding exchange, biomass and demand`)}
-      ${stat('GAM', s.gam ?? 'not computed', 'mmol ATP gDW<sup>-1</sup>')}
-      ${stat('NGAM', s.ngam ?? 'not computed', `mmol ATP gDW<sup>-1</sup> h<sup>-1</sup> · ${esc(s.ngam_source || 'source not recorded')}`)}
-      ${stat('Biomass', `<span class="mono" style="font-size:var(--t-s)">${esc(s.biomass_id)}</span>`, `${fmt.format(nBiomass)} components`)}
-    </div>
-
-    <h3>Growth rate anchors</h3>
-    <p class="sub">Anchor interval per medium axis as recorded in the model release, in h<sup>-1</sup>.</p>
-    <div class="tablewrap" style="max-width:480px">
-      <table class="data growth-table">
-        <thead><tr><th scope="col">Medium axis</th><th scope="col">mu min</th><th scope="col">mu max</th></tr></thead>
-        <tbody>${growthRows || '<tr><td colspan="3">No growth anchors recorded for this model.</td></tr>'}</tbody>
-      </table>
-    </div>
+    ${dashboardHTML()}
 
     <details style="margin-top:var(--s4)">
       <summary style="cursor:pointer;font-weight:600">Biomass reaction (${esc(s.biomass_id)}, ${fmt.format(nBiomass)} components)</summary>
@@ -159,6 +156,138 @@ function renderGem() {
 
 function stat(k, v, d) {
   return `<div class="stat"><div class="k">${k}</div><div class="v">${v}</div><div class="d">${d}</div></div>`;
+}
+
+// ---------------- dashboard (all values from the loaded model file) ----------------
+const COMP_LABEL = { c: 'cytosol', p: 'periplasm', e: 'extracellular' };
+const COMP_COLORS = { cytosol: '#3A62B0', periplasm: '#2A8A80', extracellular: '#A65D1E', 'cross-compartment': '#8A4BA8', exchange: '#98948C' };
+
+function normComp(cRaw) {
+  // compartment ids are c/p/e, occasionally prefixed (C_c); take the suffix
+  const c = String(cRaw || '');
+  const t = c.includes('_') ? c.split('_').pop() : c;
+  return COMP_LABEL[t] || (c || 'unrecorded');
+}
+
+function dashboardHTML() {
+  const s = gem.stats;
+  const R = gem.reactions.length;
+
+  // headline cards: this model versus the mean of all registered GEMs
+  const allGems = indexCache ? indexCache.gems : [];
+  const mean = (key) => allGems.length ? allGems.reduce((a, g) => a + g[key], 0) / allGems.length : null;
+  const meanLabel = `${allGems.length}-GEM mean`;
+  const speciesAccent = (indexCache && (indexCache.gems.find(g => g.acc === acc) || {}).accent) || 'var(--accent)';
+
+  // 1 · reactions by pathway group
+  const byGroup = new Map();
+  for (const r of gem.reactions) {
+    const g = r.group || 'Ungrouped';
+    byGroup.set(g, (byGroup.get(g) || 0) + 1);
+  }
+  const groupRows = [...byGroup.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([g, n]) => ({ label: g, value: n, color: g === 'Ungrouped' ? '#C9C5BD' : (GROUP_COLORS[g] || NEUTRAL_BAR) }));
+
+  // 2 · reactions by compartment (internal single-compartment, cross-compartment, exchange)
+  const metComp = new Map(gem.metabolites.map(m => [m.id, normComp(m.comp)]));
+  const compCounts = { cytosol: 0, periplasm: 0, extracellular: 0, 'cross-compartment': 0, exchange: 0 };
+  for (const r of gem.reactions) {
+    if (r.ex) { compCounts.exchange++; continue; }
+    const comps = new Set(Object.keys(r.stoich).map(m => metComp.get(m) || 'unrecorded'));
+    if (comps.size === 1) {
+      const c = [...comps][0];
+      if (c in compCounts) compCounts[c]++; else compCounts['cross-compartment']++;
+    } else {
+      compCounts['cross-compartment']++;
+    }
+  }
+  const compSegs = Object.entries(compCounts).filter(([, n]) => n > 0)
+    .map(([label, n]) => ({ label, value: n, color: COMP_COLORS[label] }));
+
+  // 3 · metabolites by compartment
+  const metCompCounts = new Map();
+  for (const m of gem.metabolites) {
+    const c = normComp(m.comp);
+    metCompCounts.set(c, (metCompCounts.get(c) || 0) + 1);
+  }
+  const metSegs = [...metCompCounts.entries()].sort((a, b) => b[1] - a[1])
+    .map(([label, n]) => ({ label, value: n, color: COMP_COLORS[label] || NEUTRAL_BAR }));
+
+  // 5 · exchange / transport / internal
+  const nTransport = gem.reactions.filter(r => r.transport && !r.ex).length;
+  const roleSegs = [
+    { label: 'internal', value: R - s.exchanges - nTransport, color: speciesAccent },
+    { label: 'transport', value: nTransport, color: '#2E7A9E' },
+    { label: 'exchange', value: s.exchanges, color: '#98948C' },
+  ];
+
+  // 7 · biomass precursors (consumed side, maintenance ATP terms set aside)
+  const GAM_TERMS = new Set(['atp_c', 'h2o_c', 'adp_c', 'pi_c', 'h_c']);
+  const consumed = Object.entries(gem.biomass || {}).filter(([, c]) => c < 0);
+  const precursors = consumed.filter(([m]) => !GAM_TERMS.has(m))
+    .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]));
+  const topPre = precursors.slice(0, 12).map(([m, c]) => ({
+    label: m, value: Math.abs(c), color: speciesAccent,
+  }));
+
+  // 9 · growth anchors
+  const growthRows = Object.entries(gem.growth || {}).map(([axis, r]) => ({
+    label: axis, lo: r?.[0] ?? null, hi: r?.[1] ?? null,
+  }));
+
+  const w = fitWidth(root, 380);
+  return `
+    <div class="dash-head">
+      ${statCard('Genes', s.genes, 'in model', { mean: mean('genes'), meanLabel, color: speciesAccent })}
+      ${statCard('Reactions', s.reactions, 'in model', { mean: mean('reactions'), meanLabel, color: speciesAccent })}
+      ${statCard('Metabolites', s.metabolites, 'in model', { mean: mean('metabolites'), meanLabel, color: speciesAccent })}
+      ${statCard('Exchanges', s.exchanges, `of ${fmt.format(R)} reactions`)}
+      ${statCard('Transporters', s.transporters, `of ${fmt.format(R)} reactions`)}
+    </div>
+
+    <div class="chart-grid">
+      ${chartBlock(`Reaction composition by pathway group (${fmt.format(R)} reactions)`,
+        hBars(groupRows, { total: R }),
+        'Groups follow the union-map assignment; reactions outside the 13 named groups are Ungrouped.')}
+
+      ${chartBlock(`Reactions by compartment (${fmt.format(R)} reactions)`,
+        stackBar(compSegs, { total: R }),
+        'Internal reactions are placed by the compartment of their metabolites; a reaction spanning two compartments counts as cross-compartment.')}
+
+      ${chartBlock(`Metabolites by compartment (${fmt.format(gem.metabolites.length)} metabolites)`,
+        donut(metSegs, { centerTop: fmt.format(gem.metabolites.length), centerBottom: 'metabolites' }))}
+
+      ${chartBlock(`Exchange, transport and internal reactions (${fmt.format(R)} reactions)`,
+        stackBar(roleSegs, { total: R }))}
+
+      ${chartBlock('Mass balance',
+        fractionBar(s.mass_balanced, s.balanceable, { color: speciesAccent, label: 'mass balanced' }),
+        `Balanced of the ${fmt.format(s.balanceable)} balanceable reactions (${fmt.format(R - s.balanceable)} of ${fmt.format(R)} carry no full formula set and cannot be checked).`)}
+
+      ${chartBlock('Reactions without a gene rule (gap-filled or orphan)',
+        s.gapfilled_orphan == null
+          ? '<p class="status">not computed for this model</p>'
+          : fractionBar(s.gapfilled_orphan, R, { color: '#A65D1E', label: 'without a gene rule' }),
+        s.gapfilled_orphan == null ? '' : 'Exchange, biomass and demand reactions are excluded from the count.')}
+
+      ${chartBlock(`Biomass precursor coefficients (top ${topPre.length} of ${fmt.format(precursors.length)} consumed components)`,
+        hBars(topPre, { showPct: false, valueFmt: (v) => String(Math.round(v * 1e4) / 1e4) }),
+        `|coefficient| in mmol gDW<sup>-1</sup>. The maintenance terms (ATP, H<sub>2</sub>O, ADP, Pi, H; GAM ${s.gam ?? 'not computed'}) are set aside; the full ${fmt.format(Object.keys(gem.biomass || {}).length)}-component reaction is below.`)}
+
+      ${chartBlock('Maintenance energy and biomass objective',
+        `<div class="dash-head" style="margin-top:0">
+          ${stat('GAM', s.gam ?? 'not computed', 'mmol ATP gDW<sup>-1</sup>, growth-associated')}
+          ${stat('NGAM', s.ngam ?? 'not computed', `mmol ATP gDW<sup>-1</sup> h<sup>-1</sup> · ${esc(s.ngam_source || 'source not recorded')}`)}
+          ${stat('Biomass', `<span class="mono" style="font-size:var(--t-s)">${esc(s.biomass_id)}</span>`, `${fmt.format(Object.keys(gem.biomass || {}).length)} components`)}
+        </div>`)}
+
+      ${chartBlock(`Growth anchors per medium axis (${growthRows.length} ${growthRows.length === 1 ? 'axis' : 'axes'}, model-derived)`,
+        growthRows.length
+          ? intervals(growthRows, { width: Math.min(w, 380), unit: 'h^-1', color: speciesAccent })
+          : '<p class="status">No growth anchors recorded for this model.</p>',
+        'Anchor interval (mu min to mu max, h<sup>-1</sup>) recorded in the model release; a reference interval from the model chain, not an experimental measurement.')}
+    </div>`;
 }
 
 // Whole-model export: SBML (level 3 version 1, fbc v2) or COBRA JSON, both

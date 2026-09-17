@@ -4,7 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Metabolic Atlas · bioconversion search across 35 GEMs of 4 species</title>
-<meta name="description" content="Search substrate to product bioconversions across 35 genome-scale metabolic models of Parageobacillus thermoglucosidasius, Pseudomonas putida, Cupriavidus necator and Eubacterium limosum, on a 3D metabolic map.">
+<meta name="description" content="Search substrate to product bioconversions across 35 genome-scale metabolic models of Parageobacillus thermoglucosidasius, Pseudomonas putida, Cupriavidus necator and Eubacterium limosum, test flux feasibility in the browser, and design knockouts on a 3D metabolic map.">
+<link rel="icon" href="data:,">
 <link rel="stylesheet" href="assets/app.css">
 <script type="importmap">
 {
@@ -17,24 +18,27 @@
 </head>
 <body>
 <header class="top">
-  <a class="wordmark" href="#/search">Metabolic Atlas<span class="dot">.</span></a>
-  <nav aria-label="Main">
-    <a class="navlink" id="nav-search" href="#/search" aria-current="page">Search map</a>
-    <a class="navlink" id="nav-gems" href="#/gems">GEM browser</a>
-    <a class="navlink" id="nav-analysis" href="#/analysis">Analysis</a>
+  <a class="wordmark" href="#/discover">Metabolic Atlas<span class="dot">.</span></a>
+  <nav class="stepper" aria-label="Workflow stages">
+    <a class="navlink step" id="nav-discover" href="#/discover" aria-current="page"><span class="stepn" aria-hidden="true">1</span>Discover</a>
+    <a class="navlink step" id="nav-model" href="#/model"><span class="stepn" aria-hidden="true">2</span>Model</a>
+    <a class="navlink step" id="nav-simulate" href="#/simulate"><span class="stepn" aria-hidden="true">3</span>Simulate</a>
+    <a class="navlink step" id="nav-engineer" href="#/engineer"><span class="stepn" aria-hidden="true">4</span>Engineer</a>
     <a class="navlink" href="methods.html">Methods &amp; limitations</a>
   </nav>
   <span class="release" id="release-line">35 GEMs · 4 species · data release 2026-09-17</span>
 </header>
 
+<div class="ctxbar" id="context-bar" aria-label="Session context: carried into every stage"></div>
+
 <main>
-  <!-- ================= SEARCH VIEW ================= -->
-  <section class="view" id="view-search" aria-label="Bioconversion search">
+  <!-- ================= 1 · DISCOVER ================= -->
+  <section class="view" id="view-discover" aria-label="Discover: bioconversion search">
     <h1>Which species and strains convert a substrate to a product, and by what pathway?</h1>
     <p class="sub">Pathway search over the union reaction network of 35 genome-scale models:
       Parageobacillus thermoglucosidasius (8), Pseudomonas putida (7), Cupriavidus necator (14)
-      and Eubacterium limosum (6). Mode 1 ranks enzyme-presence pathways; Mode 2 tests flux
-      feasibility for a chosen GEM on an editable medium, solved in the browser.</p>
+      and Eubacterium limosum (6). Pathways are ranked by length with the strains that carry every
+      step; flux feasibility of a pathway in one GEM on a medium is stage 3 (Simulate).</p>
 
     <form class="searchbar" id="search-form" role="search" aria-label="Substrate to product search">
       <div class="field picker" id="picker-sub">
@@ -44,7 +48,7 @@
                placeholder="Name, BiGG id or KEGG id…" disabled>
         <ul class="listbox" id="sub-listbox" role="listbox" hidden></ul>
       </div>
-      <span class="swap-arrow" aria-hidden="true">→</span>
+      <span class="swap-arrow" aria-hidden="true">&#8594;</span>
       <div class="field picker" id="picker-prod">
         <label for="prod-input">Product</label>
         <input type="text" id="prod-input" role="combobox" aria-expanded="false"
@@ -53,27 +57,18 @@
         <ul class="listbox" id="prod-listbox" role="listbox" hidden></ul>
       </div>
       <div class="field">
-        <span class="field-label" id="species-label" style="font-size:var(--t-xs);font-weight:600;color:var(--ink-2)">Species filter</span>
+        <span class="field-label" id="species-label">Species filter</span>
         <div class="chiprow" id="species-chips" role="group" aria-labelledby="species-label"></div>
       </div>
-      <fieldset class="modegroup" style="border:none;padding:0;margin:0">
-        <legend style="font-size:var(--t-xs);font-weight:600;color:var(--ink-2);padding:0">Mode</legend>
-        <div class="modes">
-          <label class="mode"><input type="radio" name="mode" value="1" checked> Mode 1 · enzyme presence</label>
-          <label class="mode"><input type="radio" name="mode" value="2"> Mode 2 · flux feasibility (GEM + medium)</label>
-        </div>
-      </fieldset>
       <button class="btn primary run" id="run-search" type="submit" disabled>Search pathways</button>
     </form>
 
-    <div id="mode2-panel" hidden></div>
-
-    <div class="split">
+    <div class="split" id="workbench">
       <div class="map-pane" id="map-pane">
         <div class="map-status" id="map-status">Loading union map (1.3 MB)…</div>
         <div class="map-hud" id="map-hud" hidden>
-          <span class="hudbox"><label style="display:inline-flex;gap:6px;align-items:center"><input type="checkbox" id="toggle-currency" checked> Currency metabolites</label></span>
-          <span class="hudbox"><label style="display:inline-flex;gap:6px;align-items:center"><input type="checkbox" id="toggle-labels" checked> Sector labels</label></span>
+          <span class="hudbox"><label class="hudcheck"><input type="checkbox" id="toggle-currency"> Currency metabolites</label></span>
+          <span class="hudbox"><label class="hudcheck"><input type="checkbox" id="toggle-labels" checked> Sector labels</label></span>
           <button class="btn small" id="reset-view" type="button">Reset view</button>
           <button class="btn small" id="clear-highlight" type="button" hidden>Clear highlight</button>
         </div>
@@ -88,40 +83,48 @@
             <strong id="dataset-line">Loading dataset…</strong>
             <ul>
               <li>Pick a substrate and a product by standard name ("acetate"), BiGG id (ac_e) or KEGG id (C00033). Ids carry a compartment suffix (_e extracellular, _p periplasm, _c cytosol).</li>
-              <li>Mode 1 ranks pathways by length and reports which of the 35 GEMs carry every step.</li>
-              <li>Mode 2 tests each pathway's flux feasibility for one GEM on an editable medium; the substrate replaces the medium's carbon source.</li>
+              <li>Results rank pathways by length and report which of the 35 GEMs carry every step.</li>
               <li>Currency metabolites (ATP, NAD, water…) are never used as pathway intermediates.</li>
+              <li>Stage 3 (Simulate) tests each pathway's flux feasibility for one GEM on an editable medium.</li>
             </ul>
-            <div class="chiprow" style="margin-top:var(--s3)" id="example-row"></div>
+            <div class="chiprow" id="example-row"></div>
           </div>
         </div>
       </aside>
     </div>
 
-    <div class="card" style="margin-top:var(--s5);font-size:var(--t-s);color:var(--ink-2)">
-      <h3 style="margin-top:0;color:var(--ink)">Analysis and export</h3>
-      <p style="margin:0;max-width:80ch">The <a href="#/analysis">Analysis</a> view runs single-reaction
-      knockout sweeps, shadow-price and reduced-cost estimates, growth-coupling knockout search,
-      production envelopes, FSEOF over- and under-expression scans, linear (L1) MOMA knockout
-      predictions and flux sampling on any of the 35 GEMs, solved in this browser. The
-      <a href="#/gems">GEM browser</a> exports any model as SBML (FBC v2) or COBRA JSON with session
-      bound edits applied. Definitions, thresholds and limitations:
-      <a href="methods.html#analysis">methods page</a>.</p>
-    </div>
+    <div id="atlas-overview"></div>
   </section>
 
-  <!-- ================= GEM BROWSER VIEW ================= -->
-  <section class="view" id="view-gems" aria-label="GEM browser" hidden></section>
+  <!-- ================= 2 · MODEL ================= -->
+  <section class="view" id="view-model" aria-label="Model: GEM dashboard and browser" hidden></section>
 
-  <!-- ================= ANALYSIS VIEW ================= -->
-  <section class="view" id="view-analysis" aria-label="Constraint-based analysis" hidden>
-    <h1>Constraint-based analysis</h1>
+  <!-- ================= 3 · SIMULATE ================= -->
+  <section class="view" id="view-simulate" aria-label="Simulate: flux feasibility" hidden>
+    <h1>Is a found pathway flux-feasible in the chosen GEM on a medium?</h1>
+    <p class="sub">Feasibility is a linear-programming test per pathway: the product's export is
+      maximised while every pathway step carries flux in the pathway direction, under the GEM's
+      bounds and the medium's uptake limits, solved with GLPK in this browser. The substrate from
+      Discover replaces the medium's carbon source unless switched off below.</p>
+    <div id="mode2-host">
+      <div class="card"><span class="status">Loading the flux engine (GLPK-WASM, about 250 kB)…</span></div>
+    </div>
+    <div class="card simrun">
+      <button class="btn primary" id="sim-run" type="button" disabled>Test feasibility of found pathways</button>
+      <span class="status" id="sim-status" role="status" aria-live="polite"></span>
+    </div>
+    <div id="sim-dock"></div>
+  </section>
+
+  <!-- ================= 4 · ENGINEER ================= -->
+  <section class="view" id="view-engineer" aria-label="Engineer: constraint-based strain design" hidden>
+    <h1>Engineer</h1>
     <p class="sub" id="analysis-loading">Loading the analysis module…</p>
   </section>
 </main>
 
 <footer>
-  <span>Metabolic Atlas · Mode 1 pathway search, Mode 2 flux feasibility, knockout / coupling / FSEOF / MOMA / sampling analysis, SBML and JSON export, 3D union map, GEM browser.</span>
+  <span>Metabolic Atlas · Discover (pathway search, 3D union map) · Model (GEM dashboard, browser, SBML and JSON export) · Simulate (flux feasibility, media) · Engineer (knockouts, coupling, FSEOF, MOMA, sampling).</span>
   <a href="methods.html">Methods &amp; limitations</a>
   <a href="DATA_TERMS.md">Data terms</a>
   <span>Cross-reference data from KEGG, BiGG, MetaNetX, RHEA, ChEBI, SEED, HMDB and BioCyc, each under its own terms.</span>

@@ -1,12 +1,13 @@
 row_kind	id	selector	detail	source	notes
-entry	Metabolic Atlas	#view-search	index.html	search view is the default hash route (#/search)
+entry	Metabolic Atlas	#view-discover	index.html	Discover is the default hash route (#/discover; legacy #/search, #/gems, #/analysis alias to the stages)
 transfer_budget_kb		3072	initial load: union map (1.3 MB) plus app bundle
 viewport		390	narrowest institute probe
 primary_control	search-sub	#sub-input	Substrate picker	metabolite combobox over the union map
 primary_control	search-prod	#prod-input	Product picker	metabolite combobox over the union map
-primary_control	search-run	#run-search	Search pathways button	runs Mode 1 (and Mode 2 when selected)
-primary_control	nav-gems	#nav-gems	GEM browser nav link	opens the per-model browser and exports
-primary_control	nav-analysis	#nav-analysis	Analysis nav link	opens the constraint-based analysis view
+primary_control	search-run	#run-search	Search pathways button	runs the Discover pathway enumeration
+primary_control	nav-model	#nav-model	Model stage nav link	opens the GEM dashboard, browser and exports
+primary_control	nav-simulate	#nav-simulate	Simulate stage nav link	opens the flux-feasibility stage; its Test-feasibility button (#sim-run) lives on the #/simulate route and is probed by the project's own headless pass at 390 and 1440
+primary_control	nav-engineer	#nav-engineer	Engineer stage nav link	opens the strain-design tool cards
 headline_claim	dataset-line	#dataset-line	metabolites, currency and reactions in the union map with their denominators	GRAPH.n_metabolites, GRAPH.n_reactions, metList currency count in app.js boot
 headline_claim	results-summary	#results-summary	pathway count and best-carrier count, each with its denominator	pathways.length and pw.carriers of META.accs.length in renderResults (app.js)
 capped_list	pathway-cards	#results-body	20 pathway cards per Show-more batch	pathways.length printed in the more-bar status (app.js showMore)
@@ -16,9 +17,13 @@ capped_list	fseof-targets	#an-fseof-out	25 FSEOF targets shown per list	res.up.l
 capped_list	moma-shifts	#an-moma-out	20 largest flux shifts shown	shifts.length printed; CSV exports all (analysis.js renderMoma)
 capped_list	sample-rows	#an-sample-table	30 sampled reactions shown, widest range first	res.rids.length printed; CSV exports all (analysis.js renderSampleRows CAP=30)
 capped_list	sweep-rows	#an-sweep-table	50 knockout rows per page	list.length and st.sweep.rows.length printed (analysis.js renderSweepTable)
-budget_cap	maxExpansions		assets/search.js:7	termination.hitBudget	Mode-1 enumeration edge-expansion budget (500,000). searchPathways emits termination{complete,hitPaths,hitBudget,expansions,maxDepth,maxPaths,maxExpansions}; terminationLine renders an incomplete search as "Search incomplete: stopped at the N-expansion budget ... a pathway may exist beyond these caps", never as absence of a route.
-budget_cap	maxPaths		assets/search.js:7	termination.hitPaths	Mode-1 kept-pathway cap (60). Rendered by terminationLine as "stopped at the N-pathway cap"; a capped enumeration is never presented as a complete pathway list.
-budget_cap	maxDepth		assets/search.js:7	termination.maxDepth	Mode-1 maximum pathway length (8 steps). A no-pathway result states "within N steps" and, when the enumeration also hit a cap, that further pathways may exist beyond the caps.
+budget_cap	maxExpansions		assets/search.js:7	termination.hitBudget	Discover enumeration edge-expansion budget (500,000). searchPathways emits termination{complete,hitPaths,hitBudget,expansions,maxDepth,maxPaths,maxExpansions}; terminationLine renders an incomplete search as "Search incomplete: stopped at the N-expansion budget ... a pathway may exist beyond these caps", never as absence of a route.
+budget_cap	maxPaths		assets/search.js:7	termination.hitPaths	Discover kept-pathway cap (60). Rendered by terminationLine as "stopped at the N-pathway cap"; a capped enumeration is never presented as a complete pathway list.
+budget_cap	maxDepth		assets/search.js:7	termination.maxDepth	Discover maximum pathway length (8 steps). A no-pathway result states "within N steps" and, when the enumeration also hit a cap, that further pathways may exist beyond the caps.
 external_data	BiGG / MetaNetX / KEGG / RHEA / ChEBI / SEED / HMDB / BioCyc		DATA_TERMS.md	Cross-reference data from KEGG, BiGG, MetaNetX, RHEA, ChEBI, SEED, HMDB and BioCyc	terms and provenance for the linked cross-reference resources
-methods_surface			methods.html	methods and limitations page, linked from the header nav on every view and from the search empty state
+methods_surface			methods.html	methods and limitations page, linked from the header nav on every stage, the footer, the Simulate method note and each Engineer tool's method note
 async_flow		yes	search, feasibility, sweep, coupling, FSEOF, MOMA, sampling and duals all write to role=status aria-live regions
+capped_list	search-presence	#results-body .chart	15 pathways per presence-overview matrix	nRows of pathways.length printed in the chart title (app.js searchCharts CAP=15)
+capped_list	sample-quantiles	#an-sample-out .chart	14 reactions per widest-distribution chart	top.length of res.rids.length printed in the chart title (analysis.js sampleChart CAP=14)
+capped_list	fseof-diverging	#an-fseof-out .chart	10 targets per side of the diverging chart	printed in the chart title with both denominators (analysis.js fseofChart CAP=10)
+capped_list	sp-chart	#an-sp-chart	12 metabolites per shadow-price chart	top.length of finite estimates and of gem.metabolites.length in the title (analysis.js renderDualsChart CAP=12)

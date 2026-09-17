@@ -53,8 +53,17 @@ export async function createMap(container, graph, groupColors, opts = {}) {
   ];
   for (const s of shellDefs) {
     const geo = new THREE.SphereGeometry(s.r, 28, 18);
-    const mat = new THREE.MeshBasicMaterial({ color: 0xE6E3DC, wireframe: true, transparent: true, opacity: 0.22 });
+    const mat = new THREE.MeshBasicMaterial({ color: 0xE6E3DC, wireframe: true, transparent: true, opacity: 0.16 });
     scene.add(new THREE.Mesh(geo, mat));
+    // a stronger equator ring per shell, so the three shells read as structure
+    const ringPts = [];
+    for (let i = 0; i <= 96; i++) {
+      const a = i / 96 * Math.PI * 2;
+      ringPts.push(Math.cos(a) * s.r, 0, Math.sin(a) * s.r);
+    }
+    const ringGeo = new THREE.BufferGeometry();
+    ringGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(ringPts), 3));
+    scene.add(new THREE.Line(ringGeo, new THREE.LineBasicMaterial({ color: 0xC9C5BD, transparent: true, opacity: 0.5 })));
     const div = document.createElement('div');
     div.className = 'shell-label';
     div.textContent = s.label;
@@ -95,7 +104,7 @@ export async function createMap(container, graph, groupColors, opts = {}) {
     });
     return new THREE.Points(geo, mat);
   }
-  const mainPoints = buildPoints(mainIds, 1.1, 0.95, false);
+  const mainPoints = buildPoints(mainIds, 1.3, 0.95, false);
   const curPoints = buildPoints(curIds, 0.55, 0.4, true);
   scene.add(mainPoints, curPoints);
 
@@ -122,7 +131,7 @@ export async function createMap(container, graph, groupColors, opts = {}) {
     const g1 = new THREE.BufferGeometry();
     g1.setAttribute('position', new THREE.BufferAttribute(new Float32Array(mainPos), 3));
     g1.setAttribute('color', new THREE.BufferAttribute(new Float32Array(mainCol), 3));
-    const e1 = new THREE.LineSegments(g1, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.14 }));
+    const e1 = new THREE.LineSegments(g1, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.17 }));
     const g2 = new THREE.BufferGeometry();
     g2.setAttribute('position', new THREE.BufferAttribute(new Float32Array(curPos), 3));
     const e2 = new THREE.LineSegments(g2, new THREE.LineBasicMaterial({ color: 0xCCC8C0, transparent: true, opacity: 0.05 }));
@@ -297,7 +306,7 @@ export async function createMap(container, graph, groupColors, opts = {}) {
   }
 
   function undim() {
-    mainEdges.material.opacity = 0.14;
+    mainEdges.material.opacity = 0.17;
     mainPoints.material.opacity = 0.95;
     curEdges.material.opacity = 0.05;
     curPoints.material.opacity = 0.4;

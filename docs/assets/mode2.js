@@ -1,9 +1,11 @@
-// Mode 2: flux feasibility of Mode-1 pathways for a chosen GEM on an editable
-// medium. Owns the media panel, the substrate-as-carbon-source swap, and the
-// per-pathway feasibility / pFBA / FVA runs. All solving happens in the GLPK
-// worker; every result carries its denominator; absent stays absent.
+// Simulate stage: flux feasibility of found pathways for a chosen GEM on an
+// editable medium. Owns the media panel, the substrate-as-carbon-source swap,
+// and the per-pathway feasibility / pFBA / FVA runs. All solving happens in the
+// GLPK worker; every result carries its denominator; absent stays absent.
+// The GEM and medium choices are read from and written to the session context.
 
 import { loadGem, loadMedia, fmt, onEditsChanged } from './data.js';
+import { getContext, setContext, onContext } from './context.js';
 import { getGLPK, maxGrowth, productTarget, pathwayFeasibility, pathwayPFBA, pathwayFVA, stepConstraints, diagnoseSteps, statusName, STEP_MIN_FLUX } from './fba.js';
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -15,7 +17,7 @@ export async function initMode2(panel, ctx) {
   const [, mediaLib] = await Promise.all([getGLPK(), loadMedia()]);
 
   const state = {
-    active: false,
+    active: true,
     gemAcc: null, gem: null,
     customs: new Map(),          // label -> medium def (session only)
     currentLabel: null,
@@ -66,7 +68,7 @@ export async function initMode2(panel, ctx) {
     document.querySelectorAll('#results-body .feas-slot, #results-body .mode2-slot, #results-body .flux-slot')
       .forEach(el => { el.innerHTML = ''; });
     const s = document.querySelector('#results-summary .mode2-status');
-    if (s) s.innerHTML = `<span class="status">${why || 'The GEM or medium changed'}; run the search again to re-test feasibility.</span>`;
+    if (s) s.innerHTML = `<span class="status">${why || 'The GEM or medium changed'}; choose "Test feasibility of found pathways" in Simulate to re-test.</span>`;
   }
 
   // Bound edits and knockouts made in the GEM browser or the Analysis view
@@ -108,12 +110,16 @@ export async function initMode2(panel, ctx) {
   panel.innerHTML = `
     <div class="card mode2-card">
       <div class="mode2-head">
-        <h2 id="m2-title">Mode 2 · flux feasibility</h2>
+        <h2 id="m2-title">Flux context: GEM + medium</h2>
         <span class="status" id="m2-engine">GLPK 5.0 (WASM) loaded · solves in a background worker</span>
       </div>
-      <p class="sub">Feasibility is tested per pathway for one GEM on one medium: the LP maximises
-      a demand on the product while every pathway step carries at least ${STEP_MIN_FLUX} mmol gDW<sup>-1</sup> h<sup>-1</sup>
-      in the pathway direction. Exchanges not listed in the medium are closed. pFBA and FVA run per pathway on request.</p>
+      <details class="methodnote">
+        <summary>Method</summary>
+        <p>Feasibility is tested per pathway for one GEM on one medium: the LP maximises
+        a demand on the product while every pathway step carries at least ${STEP_MIN_FLUX} mmol gDW<sup>-1</sup> h<sup>-1</sup>
+        in the pathway direction. Exchanges not listed in the medium are closed. pFBA and FVA run
+        per pathway on request. Definitions and limits: <a href="methods.html#analysis">methods page</a>.</p>
+      </details>
       <div class="gem-toolbar">
         <div class="field">
           <label for="m2-gem">GEM (1 of 35)</label>
@@ -184,7 +190,8 @@ export async function initMode2(panel, ctx) {
     const acc = gemSel.value;
     invalidateRun();
     state.gem = null; state.gemAcc = null;
-    if (!acc) { renderMediumEditor(); renderSwapNote(); return; }
+    setContext({ gem: acc || null });
+    if (!acc) { renderMediumEditor(); renderSwapNote(); notifyState(); return; }
     try {
       statusEl.textContent = `Loading GEM ${acc} (about 1 MB)…`;
       const gem = await loadGem(acc);
@@ -196,15 +203,40 @@ export async function initMode2(panel, ctx) {
     }
     renderMediumEditor();
     renderSwapNote();
+    notifyState();
   });
 
   medSel.addEventListener('change', () => {
     invalidateRun();
     loadWorking(medSel.value || null);
+    setContext({ medium: medSel.value || null });
     $p('#m2-clone').disabled = !state.working;
     renderMediumEditor();
     renderSwapNote();
+    notifyState();
   });
+
+  function notifyState() { if (ctx.onStateChange) ctx.onStateChange(); }
+
+  // Context written elsewhere (the Model stage select, the Engineer toolbar)
+  // is applied here so the chosen GEM and medium carry into the flux setup.
+  function applyContext(c) {
+    if ((c.gem || '') !== gemSel.value) {
+      const has = c.gem && ctx.index.gems.some(g => g.acc === c.gem);
+      gemSel.value = has ? c.gem : '';
+      gemSel.dispatchEvent(new Event('change'));
+    }
+    if ((c.medium || '') !== medSel.value) {
+      const label = c.medium || '';
+      const has = label && (mediaLib[label] || state.customs.has(label));
+      medSel.value = has ? label : '';
+      medSel.dispatchEvent(new Event('change'));
+    }
+  }
+  onContext((c, changed) => {
+    if (changed.includes('gem') || changed.includes('medium')) applyContext(c);
+  });
+  applyContext(getContext());
 
   $p('#m2-clone').addEventListener('click', () => {
     if (!state.working) return;
@@ -219,8 +251,10 @@ export async function initMode2(panel, ctx) {
     rebuildMediumOptions();
     medSel.value = label;
     loadWorking(label);
+    setContext({ medium: label });
     renderMediumEditor();
     renderSwapNote();
+    notifyState();
     statusEl.textContent = `Saved as "${label}" (held in browser memory for this session).`;
   });
 
@@ -576,10 +610,10 @@ export async function initMode2(panel, ctx) {
 
   // ---------- public api ----------
   return {
-    setActive(v) { state.active = v; panel.hidden = !v; },
+    setActive(v) { state.active = v; },
     notReadyReason() {
-      if (!state.gemAcc || !state.gem) return 'Mode 2 needs a GEM: choose one of the 35 models in the Mode 2 panel.';
-      if (!state.working) return 'Mode 2 needs a medium: choose one of the 9 predefined media (or a custom clone) in the Mode 2 panel.';
+      if (!state.gemAcc || !state.gem) return 'Choose a GEM (1 of 35) above; the choice carries across every stage.';
+      if (!state.working) return 'Choose a medium (9 predefined, or a custom clone) above.';
       return null;
     },
     onEndpointsChange(sub, prod) {

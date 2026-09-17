@@ -4,15 +4,17 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Methods and limitations · Metabolic Atlas</title>
+<link rel="icon" href="data:,">
 <link rel="stylesheet" href="assets/app.css">
 </head>
 <body>
 <header class="top">
-  <a class="wordmark" href="index.html#/search">Metabolic Atlas<span class="dot">.</span></a>
-  <nav aria-label="Main">
-    <a class="navlink" href="index.html#/search">Search map</a>
-    <a class="navlink" href="index.html#/gems">GEM browser</a>
-    <a class="navlink" href="index.html#/analysis">Analysis</a>
+  <a class="wordmark" href="index.html#/discover">Metabolic Atlas<span class="dot">.</span></a>
+  <nav class="stepper" aria-label="Workflow stages">
+    <a class="navlink step" href="index.html#/discover"><span class="stepn" aria-hidden="true">1</span>Discover</a>
+    <a class="navlink step" href="index.html#/model"><span class="stepn" aria-hidden="true">2</span>Model</a>
+    <a class="navlink step" href="index.html#/simulate"><span class="stepn" aria-hidden="true">3</span>Simulate</a>
+    <a class="navlink step" href="index.html#/engineer"><span class="stepn" aria-hidden="true">4</span>Engineer</a>
     <a class="navlink" href="methods.html" aria-current="page">Methods &amp; limitations</a>
   </nav>
   <span class="release">35 GEMs · 4 species · data release 2026-09-17</span>
@@ -60,7 +62,7 @@
   results with a presence of 0 of 35 strains; a pathway through them cannot be carried
   end-to-end by any strain.</p>
 
-  <h2>Mode 1: pathway search by enzyme presence</h2>
+  <h2 id="discover">Pathway search by enzyme presence (Discover)</h2>
   <p>The search enumerates simple paths from the substrate to the product over a directed
   metabolite graph. Each reaction contributes an edge from every substrate to every
   product; a reaction with a negative lower bound in at least one GEM also contributes
@@ -84,7 +86,7 @@
   of the pathway. Presence does not check that the strain's own bounds permit each step
   in the required direction, does not check cofactor or redox balance, carbon
   conservation, thermodynamic feasibility, or flux feasibility; those checks belong to
-  Mode 2. A pathway list is almost never complete: enumeration is bounded by the caps
+  the Simulate stage. A pathway list is almost never complete: enumeration is bounded by the caps
   above and by the union network itself, which contains only reactions present in at
   least one of the 35 models.</p>
 
@@ -94,13 +96,13 @@
   standard name and 1,704 a KEGG id; the remainder match by id only. Exact matches rank
   first, then prefix matches, then substring matches.</p>
 
-  <h2>Mode 2: flux feasibility</h2>
-  <p>Mode 2 evaluates Mode-1 pathways in one chosen GEM on one medium by linear
+  <h2 id="simulate">Flux feasibility (Simulate)</h2>
+  <p>The Simulate stage evaluates found pathways in one chosen GEM on one medium by linear
   programming (GLPK 5.0 compiled to WebAssembly; every solve runs in the browser).
   The LP is steady-state mass balance S·v = 0 with the model's reaction bounds. Exchange
   reactions take their lower bound from the medium; an exchange not listed in the medium
   is closed (lb = 0). Secretion bounds keep the model's values. Bound edits made in the
-  GEM browser reactions table apply to all Mode-2 solves in the same session.</p>
+  Model-stage reactions table apply to all feasibility solves in the same session.</p>
   <p>A pathway is feasible on the medium when an LP solution exists that maximises a
   demand on the product while every pathway step carries at least 10<sup>-4</sup>
   mmol gDW<sup>-1</sup> h<sup>-1</sup> of net flux in the pathway direction, summed over
@@ -118,7 +120,7 @@
   the 10 shortest pathways of a search; the remaining pathways are tested one at a time
   from their result cards. Flux values are model predictions, not measurements.</p>
   <table>
-    <thead><tr><th scope="col">Mode 2 parameter</th><th scope="col">Value</th></tr></thead>
+    <thead><tr><th scope="col">Feasibility parameter</th><th scope="col">Value</th></tr></thead>
     <tbody>
       <tr><td>Minimum per-step pathway flux</td><td>10<sup>-4</sup> mmol gDW<sup>-1</sup> h<sup>-1</sup></td></tr>
       <tr><td>Product flux held for pFBA</td><td>99.9% of optimum</td></tr>
@@ -128,7 +130,7 @@
     </tbody>
   </table>
 
-  <h2>GEM browser fields</h2>
+  <h2 id="model">Model stage fields</h2>
   <p>Mass balanced counts reactions whose elemental and charge balance closes with the
   recorded formulas; balanceable additionally counts reactions that close after proton
   adjustment. The gap-filled / orphan count is the model's reactions carrying no gene
@@ -138,16 +140,16 @@
   the NGAM source is recorded per model. Growth rate anchors give the per-axis interval
   recorded in the model release, in h<sup>-1</sup>; they are model-derived values, not
   experimental measurements. Bound edits made in the reactions table are held in browser
-  memory for the session; they are written to exports and apply to every Mode-2 solve.
+  memory for the session; they are written to exports and apply to every feasibility solve.
   Reloading the page discards them.</p>
 
   <h2>Media</h2>
   <p>Nine predefined media ship with the data release. Each medium lists exchange
   reactions with uptake lower bounds, a carbon-source exchange and its uptake cap.
-  A medium is editable in the Mode 2 panel: components can be added, removed or
+  A medium is editable in the Simulate panel: components can be added, removed or
   re-bounded, and a medium can be cloned to a named custom medium. Edited and custom
   media are held in browser memory for the session; reloading the page discards them.
-  When Mode 2 runs, the chosen substrate replaces the medium's carbon source: the
+  When a feasibility run starts, the chosen substrate replaces the medium's carbon source: the
   carbon-source exchange closes and the substrate's exchange opens at the medium's
   carbon cap. The swap can be switched off per run. A GEM with no exchange reaction for
   the substrate runs the medium unchanged, and the run says so. Medium components with
@@ -156,9 +158,9 @@
 
   <h2 id="analysis">Constraint-based analysis</h2>
   <p>The Analysis view runs on one GEM and one medium, with the same LP (S·v = 0, medium
-  lower bounds on exchanges, session bound edits applied) as Mode 2. A knockout sets a
+  lower bounds on exchanges, session bound edits applied) as the Simulate stage. A knockout sets a
   reaction's bounds to [0, 0]; knockouts applied to the session are ordinary bound edits
-  and feed every other solve, including Mode 2. All solving is GLPK 5.0 simplex without
+  and feed every other solve, including the Simulate stage. All solving is GLPK 5.0 simplex without
   presolve: with the presolver on, this build of GLPK returned a solution violating a
   closed exchange bound by 1.25×10<sup>-4</sup> on this dataset, so the presolver is off
   and any solution violating a column bound by more than 10<sup>-6</sup> is refused and
@@ -277,7 +279,7 @@
   </table>
 
   <h2>Model export</h2>
-  <p>The GEM browser exports the loaded model in two formats, both built in the browser
+  <p>The Model stage exports the loaded model in two formats, both built in the browser
   at export time with the session's bound edits written in and counted in the file notes.
   A medium is a solve-time constraint and is not written into exported bounds; exports
   carry the model's own (possibly edited) bounds.</p>
@@ -296,8 +298,8 @@
   to within 10<sup>-10</sup>.</p>
 
   <h2>Release scope</h2>
-  <p>This release covers Mode 1 search, Mode 2 flux feasibility (pFBA and FVA on an
-  editable medium), the 3D union map, the GEM browser with SBML and COBRA JSON export,
+  <p>This release covers Discover pathway search, Simulate flux feasibility (pFBA and FVA on an
+  editable medium), the 3D union map, the Model stage with its dashboard and SBML and COBRA JSON export,
   and the Analysis view: single-reaction knockout sweeps, shadow-price and reduced-cost
   estimates, greedy growth-coupling search, production envelopes, FSEOF expression
   targets, linear MOMA knockout predictions and flux sampling. Not implemented: quadratic
@@ -312,7 +314,7 @@
 
 <footer>
   <span>Metabolic Atlas.</span>
-  <a href="index.html#/search">Back to search</a>
+  <a href="index.html#/discover">Back to Discover</a>
 </footer>
 </body>
 </html>

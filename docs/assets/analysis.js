@@ -7,6 +7,8 @@
 
 import { loadGem, loadMedia, setEdit, clearEdit, listEdits, onEditsChanged, fmt, downloadBlob, csvEscape } from './data.js';
 import { statusName } from './fba.js';
+import { getContext, setContext, onContext } from './context.js';
+import { chartBlock, stackBar, histogram, divergingBars, quantileRows, pairedBars, fitWidth } from './charts.js';
 import {
   analysisTarget, makeSession, baseState, koSweep, sweepScope,
   shadowPrices, reducedCosts, couplingSearch, productionEnvelope, floorYield,
@@ -63,14 +65,21 @@ export async function initAnalysis(root, ctx) {
 
   // ------------------------------------------------------------- skeleton ----
   root.innerHTML = `
-    <h1>Constraint-based analysis</h1>
-    <p class="sub">Reaction knockouts, growth coupling, production envelopes, FSEOF expression
-    targets, linear MOMA knockout predictions and flux sampling for one GEM on one medium, solved
-    with GLPK in this browser. Bound edits and knockouts made anywhere in this session apply to
-    every solve. Methods and thresholds are on the
+    <h1>What should be knocked out, amplified or attenuated to make the strain produce?</h1>
+    <p class="sub">Strain-design analyses for the GEM, medium, substrate and product carried from
+    stages 1 to 3: knockouts, growth coupling, production envelopes, FSEOF expression targets,
+    linear MOMA predictions and flux sampling, solved with GLPK in this browser. Bound edits and
+    knockouts made anywhere in this session apply to every solve. Methods and thresholds:
     <a href="methods.html#analysis">methods page</a>.</p>
 
-    <div class="card">
+    <div class="an-verdict card" id="an-base" role="status" aria-live="polite">
+      <p class="status">Choose a GEM and a medium below (they carry over from Model and Simulate
+      when already set). The reference state (max growth, max product export, guaranteed product
+      floor, coupling verdict) is solved as soon as both are set.</p>
+    </div>
+
+    <div class="card" style="margin-top:var(--s4)">
+      <h2 style="margin-top:0">Context</h2>
       <div class="gem-toolbar">
         <div class="field">
           <label for="an-gem">GEM (1 of 35)</label>
@@ -102,19 +111,17 @@ export async function initAnalysis(root, ctx) {
       <div id="an-koedits"></div>
     </div>
 
-    <div class="an-verdict card" id="an-base" role="status" aria-live="polite">
-      <p class="status">Choose a GEM and a medium above. The reference state (max growth, max
-      product export, guaranteed product floor, coupling verdict) is solved as soon as both are set.</p>
-    </div>
-
-    <div class="card an-section" id="an-couple">
-      <h2>Growth-coupling knockout search</h2>
-      <p class="sub">Greedy search for a knockout set that makes the product's minimum export flux
+    <details class="card an-section tool" id="an-couple">
+      <summary><h2>Growth-coupling knockout search</h2>
+        <span class="tool-hint">find a knockout set that ties product export to growth</span></summary>
+      <div class="tool-body">
+      <details class="methodnote"><summary>Method</summary>
+      <p>Greedy search for a knockout set that makes the product's minimum export flux
       positive when biomass is held at or above the chosen fraction of the knockout strain's own
       maximum. Candidates are reactions carrying flux in a parsimonious zero-product optimum; the
       search applies the single knockout that most lowers decoupled growth and repeats. A failure
       to couple within K knockouts is reported as exactly that; the heuristic does not prove
-      impossibility.</p>
+      impossibility. <a href="methods.html#analysis">Methods page</a>.</p></details>
       <div class="gem-toolbar">
         <div class="field">
           <label for="an-k">Max knockouts K</label>
@@ -131,14 +138,18 @@ export async function initAnalysis(root, ctx) {
       </div>
       <div id="an-couple-prog" class="status" role="status" aria-live="polite"></div>
       <div id="an-couple-out"></div>
-    </div>
+      </div>
+    </details>
 
-    <div class="card an-section" id="an-envelope">
-      <h2>Production envelope</h2>
-      <p class="sub">Maximum and minimum product flux at each biomass level from 0 to max growth,
+    <details class="card an-section tool" id="an-envelope">
+      <summary><h2>Production envelope</h2>
+        <span class="tool-hint">product flux band across the growth range, reference vs knockout</span></summary>
+      <div class="tool-body">
+      <details class="methodnote"><summary>Method</summary>
+      <p>Maximum and minimum product flux at each biomass level from 0 to max growth,
       under the current bounds. With a coupled knockout set from the search above, the knockout
       envelope overlays the reference one so the coupling is visible: a positive minimum at high
-      biomass is the coupling.</p>
+      biomass is the coupling. <a href="methods.html#analysis">Methods page</a>.</p></details>
       <div class="gem-toolbar">
         <div class="field">
           <label for="an-envn">Biomass levels</label>
@@ -149,18 +160,22 @@ export async function initAnalysis(root, ctx) {
         <span class="status" id="an-env-prog" role="status" aria-live="polite"></span>
       </div>
       <div id="an-env-out"></div>
-    </div>
+      </div>
+    </details>
 
-    <div class="card an-section" id="an-fseof">
-      <h2>Over- and under-expression targets (FSEOF)</h2>
-      <p class="sub">Flux scanning with enforced objective flux: the product's export is enforced at
+    <details class="card an-section tool" id="an-fseof">
+      <summary><h2>Over- and under-expression targets (FSEOF)</h2>
+        <span class="tool-hint">reactions whose flux tracks enforced product flux</span></summary>
+      <div class="tool-body">
+      <details class="methodnote"><summary>Method</summary>
+      <p>Flux scanning with enforced objective flux: the product's export is enforced at
       evenly spaced levels from 0 to ${Math.round(FSEOF_MAX_FRAC * 100)}% of its maximum, biomass is
       maximised at each level, and the flux distribution is made parsimonious. A reaction whose
       |flux| rises monotonically across the levels is an amplification (over-expression) target; one
       whose |flux| falls monotonically is an attenuation (down-regulation) target. Reactions that
       change flux direction, or never carry flux, are neither. The down-target list includes
-      reactions that shrink only because growth shrinks along the scan; the slope column ranks how
-      strongly each flux tracks the enforced product flux.</p>
+      reactions that shrink only because growth shrinks along the scan; the slope ranks how
+      strongly each flux tracks the enforced product flux. <a href="methods.html#analysis">Methods page</a>.</p></details>
       <div class="gem-toolbar">
         <div class="field">
           <label for="an-fseof-steps">Enforced levels above zero</label>
@@ -171,18 +186,22 @@ export async function initAnalysis(root, ctx) {
       </div>
       <div id="an-fseof-prog" class="status" role="status" aria-live="polite"></div>
       <div id="an-fseof-out"></div>
-    </div>
+      </div>
+    </details>
 
-    <div class="card an-section" id="an-moma">
-      <h2>Knockout phenotype by linear MOMA</h2>
-      <p class="sub">Minimisation of metabolic adjustment, linear (L1) variant: the knockout flux
+    <details class="card an-section tool" id="an-moma">
+      <summary><h2>Knockout phenotype by linear MOMA</h2>
+        <span class="tool-hint">predicted flux state after a knockout, versus plain FBA</span></summary>
+      <div class="tool-body">
+      <details class="methodnote"><summary>Method</summary>
+      <p>Minimisation of metabolic adjustment, linear (L1) variant: the knockout flux
       state minimises the summed |v - v<sub>wt</sub>| subject to mass balance and the knockout
       bounds, where v<sub>wt</sub> is the parsimonious wild-type distribution at max growth (one of
       possibly several optimal distributions). The quadratic (L2) MOMA objective needs a quadratic
       solver, which this build does not have. The FBA columns show the same knockout under plain
       growth maximisation, for comparison. Session bound edits, including session knockouts, are
       part of the reference model; knockouts picked here are applied on top for this prediction
-      only.</p>
+      only. <a href="methods.html#analysis">Methods page</a>.</p></details>
       <div class="gem-toolbar">
         <div class="field picker an-picker">
           <label for="an-moma-rxn">Add a reaction knockout (id, name or gene)</label>
@@ -196,15 +215,20 @@ export async function initAnalysis(root, ctx) {
       <div class="chiprow" id="an-moma-kos" style="margin-top:var(--s3)"></div>
       <div id="an-moma-prog" class="status" role="status" aria-live="polite"></div>
       <div id="an-moma-out"></div>
-    </div>
+      </div>
+    </details>
 
-    <div class="card an-section" id="an-sample">
-      <h2>Flux sampling</h2>
-      <p class="sub">Random-objective vertex sampling: each sample is the optimal solution of one
+    <details class="card an-section tool" id="an-sample">
+      <summary><h2>Flux sampling</h2>
+        <span class="tool-hint">per-reaction flux ranges across random optima</span></summary>
+      <div class="tool-body">
+      <details class="methodnote"><summary>Method</summary>
+      <p>Random-objective vertex sampling: each sample is the optimal solution of one
       random dense linear objective (seeded standard-normal coefficients over every reaction) on the
       feasible flux space, optionally with biomass held at or above a fraction of max growth. Every
       sample is a vertex of the solution polytope, so the distributions describe the polytope as
-      seen from random directions; this is an approximation, not a uniform sample of the interior.</p>
+      seen from random directions; this is an approximation, not a uniform sample of the interior.
+      <a href="methods.html#analysis">Methods page</a>.</p></details>
       <div class="gem-toolbar">
         <div class="field">
           <label for="an-sample-n">Samples (20 to ${SAMPLE_MAX_N})</label>
@@ -223,14 +247,19 @@ export async function initAnalysis(root, ctx) {
       </div>
       <div id="an-sample-prog" class="status" role="status" aria-live="polite"></div>
       <div id="an-sample-out"></div>
-    </div>
+      </div>
+    </details>
 
-    <div class="card an-section" id="an-sweep">
-      <h2>Single-reaction knockout sweep</h2>
-      <p class="sub">Every non-exchange reaction is closed in turn and the LP re-solved: max growth
+    <details class="card an-section tool" id="an-sweep">
+      <summary><h2>Single-reaction knockout sweep</h2>
+        <span class="tool-hint">growth and product effect of every single knockout</span></summary>
+      <div class="tool-body">
+      <details class="methodnote"><summary>Method</summary>
+      <p>Every non-exchange reaction is closed in turn and the LP re-solved: max growth
       per knockout, and with a target product set, the knockout's max product export and its
       guaranteed floor at the growth fraction above. Each row is a fresh solve; the sweep runs
-      incrementally and can be cancelled, keeping what it computed.</p>
+      incrementally and can be cancelled, keeping what it computed.
+      <a href="methods.html#analysis">Methods page</a>.</p></details>
       <div class="gem-toolbar">
         <button class="btn primary" id="an-sweep-run" type="button" disabled>Run knockout sweep</button>
         <button class="btn small" id="an-sweep-cancel" type="button" hidden>Cancel sweep</button>
@@ -239,6 +268,7 @@ export async function initAnalysis(root, ctx) {
         <span class="status" id="an-sweep-scope"></span>
       </div>
       <div id="an-sweep-prog" class="status" role="status" aria-live="polite"></div>
+      <div id="an-sweep-chart"></div>
       <div class="tablebar">
         <div class="field" style="flex:1 1 220px">
           <label for="an-sweep-filter">Filter (id, name, gene)</label>
@@ -276,15 +306,22 @@ export async function initAnalysis(root, ctx) {
         <span id="an-sweep-pageinfo"></span>
         <button class="btn small" id="an-sweep-next" type="button">Next</button>
       </div>
+      </div>
+    </details>
 
-      <h3>Shadow prices and reduced costs (finite-difference estimates)</h3>
-      <p class="sub">glpk.js does not expose LP duals, so these are estimated at the max-growth
+    <details class="card an-section tool" id="an-duals-tool">
+      <summary><h2>Shadow prices and reduced costs</h2>
+        <span class="tool-hint">which metabolites and reactions limit growth (finite-difference estimates)</span></summary>
+      <div class="tool-body">
+      <details class="methodnote"><summary>Method</summary>
+      <p>glpk.js does not expose LP duals, so these are estimated at the max-growth
       optimum by re-solving with the metabolite's mass-balance right-hand side moved by
       ${SHADOW_EPS}: one LP per metabolite. Reduced costs derive from those estimates over each
       reaction's own metabolites. At a degenerate optimum the estimate is a one-sided derivative;
       a metabolite whose perturbation is infeasible in both directions (a conserved pool) has no
       finite estimate and is reported so. Estimates within 10<sup>-6</sup> of zero should be read
-      as zero.</p>
+      as zero. <a href="methods.html#analysis">Methods page</a>.</p></details>
+      <div id="an-sp-chart"></div>
       <div class="an-duals">
         <div>
           <div class="field">
@@ -317,7 +354,8 @@ export async function initAnalysis(root, ctx) {
             <tbody></tbody></table></div>
         </div>
       </div>
-    </div>`;
+      </div>
+    </details>`;
 
   const $ = (sel) => root.querySelector(sel);
 
@@ -350,6 +388,7 @@ export async function initAnalysis(root, ctx) {
 
   gemSel.addEventListener('change', async () => {
     const acc = gemSel.value;
+    setContext({ gem: acc || null });
     st.gem = null; st.acc = null; st.sub = null; st.prod = null;
     st.momaKos = [];
     invalidateAll();
@@ -376,10 +415,31 @@ export async function initAnalysis(root, ctx) {
 
   medSel.addEventListener('change', () => {
     st.mediumLabel = medSel.value || null;
+    setContext({ medium: medSel.value || null });
     invalidateAll();
     refreshEnableState();
     renderSwapLine();
     scheduleBase();
+  });
+
+  // The GEM and medium carried from the other stages arrive through the
+  // session context; applying them re-uses the same change handlers.
+  function applyContext(c) {
+    const gemTarget = (c.gem && ctx.index.gems.some(g => g.acc === c.gem)) ? c.gem : '';
+    if (gemTarget !== gemSel.value) {
+      gemSel.value = gemTarget;
+      gemSel.dispatchEvent(new Event('change'));
+    }
+    if (c.medium && mediaLib[c.medium] && c.medium !== medSel.value) {
+      medSel.value = c.medium;
+      medSel.dispatchEvent(new Event('change'));
+    } else if (!c.medium && medSel.value) {
+      medSel.value = '';
+      medSel.dispatchEvent(new Event('change'));
+    }
+  }
+  onContext((c, changed) => {
+    if (changed.includes('gem') || changed.includes('medium')) applyContext(c);
   });
 
   $('#an-frac').addEventListener('change', () => {
@@ -413,6 +473,7 @@ export async function initAnalysis(root, ctx) {
     const open = () => { listbox.hidden = false; input.setAttribute('aria-expanded', 'true'); };
     const choose = (mid) => {
       st[kind === 'sub' ? 'sub' : 'prod'] = mid;
+      setContext(kind === 'sub' ? { sub: mid } : { prod: mid });
       const it = items.find(x => x.mid === mid);
       input.value = it && it.name ? `${it.name} (${mid})` : mid;
       close();
@@ -653,8 +714,9 @@ export async function initAnalysis(root, ctx) {
   function renderBase() {
     const el = $('#an-base');
     if (!ready()) {
-      el.innerHTML = `<p class="status">Choose a GEM and a medium above. The reference state (max growth, max
-      product export, guaranteed product floor, coupling verdict) is solved as soon as both are set.</p>`;
+      el.innerHTML = `<p class="status">Choose a GEM and a medium in the Context card below (they carry over
+      from Model and Simulate when already set). The reference state (max growth, max product export,
+      guaranteed product floor, coupling verdict) is solved as soon as both are set.</p>`;
       return;
     }
     const b = st.base;
@@ -871,6 +933,43 @@ export async function initAnalysis(root, ctx) {
       if (new Set(sessionKOs()).has(rid)) clearEdit(st.acc, rid);
       else setEdit(st.acc, rid, 0, 0);
     }));
+    renderSweepChart();
+  }
+
+  // Two designed summaries of the computed sweep: the class composition and
+  // the distribution of post-knockout max growth.
+  const CLS_COLORS = { lethal: '#A03123', costly: '#A65D1E', neutral: '#98948C', beneficial: '#2C6B50', unsolved: '#C9C5BD' };
+  function renderSweepChart() {
+    const host = $('#an-sweep-chart');
+    if (!host) return;
+    if (!st.sweep || !st.sweep.rows.length) { host.innerHTML = ''; return; }
+    const rows = st.sweep.rows;
+    const clsCounts = new Map();
+    for (const r of rows) clsCounts.set(r.cls, (clsCounts.get(r.cls) || 0) + 1);
+    const segs = ['lethal', 'costly', 'neutral', 'beneficial', 'unsolved']
+      .filter(c => clsCounts.get(c))
+      .map(c => ({ label: CLS_LABEL[c] || c, value: clsCounts.get(c), color: CLS_COLORS[c] }));
+    const clsChart = chartBlock(
+      `Knockout classes (${fmt.format(rows.length)} of ${fmt.format(st.sweep.scope)} in-scope knockouts computed)`,
+      stackBar(segs, { total: rows.length }));
+
+    const mus = rows.filter(r => r.mu != null && !r.lethalNoSteadyState).map(r => r.mu);
+    let muChart = '';
+    if (mus.length) {
+      const refMu = st.sweep.refs.mu;
+      const hi = Math.max(...mus, refMu || 0) * 1.02 || 1;
+      const NB = 18;
+      const bins = Array.from({ length: NB }, (_, i) => ({
+        x: (i * hi / NB).toFixed(2), count: 0, tick: i % 3 === 0, color: 'var(--accent)',
+      }));
+      for (const v of mus) bins[Math.min(NB - 1, Math.floor(v / hi * NB))].count++;
+      const nOther = rows.length - mus.length;
+      muChart = chartBlock(
+        `Post-knockout max growth (${fmt.format(mus.length)} of ${fmt.format(rows.length)} computed knockouts with a solved LP)`,
+        histogram(bins, { width: fitWidth(host, 520), height: 140, xLabel: 'KO max growth (h^-1), bin lower edge', barLabel: () => false }),
+        `Reference max growth ${fnum(refMu, 3)} h<sup>-1</sup>.` + (nOther ? ` ${fmt.format(nOther)} knockouts admit no steady state or did not solve and are not binned.` : ''));
+    }
+    host.innerHTML = `<div class="chart-grid">${clsChart}${muChart}</div>`;
   }
 
   function exportSweep(kind) {
@@ -991,6 +1090,20 @@ export async function initAnalysis(root, ctx) {
       || `<tr><td colspan="3" class="an-note">${rcCand.length ? `No estimates yet for the ${fmt.format(rcCand.length)} matching reactions; Estimate runs up to ${RC_BATCH} at a time.` : 'No reaction matches the filter.'}</td></tr>`;
     $('#an-sp-csv').disabled = !st.sp.size;
     $('#an-rc-csv').disabled = !st.rc.size;
+    renderDualsChart();
+  }
+
+  function renderDualsChart() {
+    const host = $('#an-sp-chart');
+    if (!host || !st.gem) return;
+    const est = [...st.sp.entries()].filter(([, rec]) => rec.y != null);
+    if (!est.length) { host.innerHTML = ''; return; }
+    const top = est.sort((a, b) => Math.abs(b[1].y) - Math.abs(a[1].y)).slice(0, 12)
+      .map(([mid, rec]) => ({ label: mid, value: rec.y }));
+    host.innerHTML = chartBlock(
+      `Largest shadow-price estimates (top ${top.length} of ${fmt.format(est.length)} finite estimates; ${fmt.format(st.sp.size)} of ${fmt.format(st.gem.metabolites.length)} metabolites estimated)`,
+      `<div class="chartwrap">${divergingBars(top, { width: fitWidth(host, 560), valueFmt: (v) => v.toExponential(2), posLabel: 'raises growth', negLabel: 'lowers growth' })}</div>`,
+      'Finite-difference estimate of d(max growth)/d(mass-balance RHS), h<sup>-1</sup> per mmol/gDW/h; a positive estimate means relaxing the metabolite&rsquo;s balance raises max growth.');
   }
 
   function exportDuals(kind) {
@@ -1187,10 +1300,10 @@ export async function initAnalysis(root, ctx) {
     const koPts = ko ? ko.points.filter(p => p.min != null && p.max != null) : null;
     const allY = pts.flatMap(p => [p.min, p.max]).concat(koPts ? koPts.flatMap(p => [p.min, p.max]) : []);
     const allX = pts.map(p => p.mu).concat(koPts ? koPts.map(p => p.mu) : []);
-    const svg = envelopeSVG(pts, koPts, Math.max(...allX), Math.min(0, Math.min(...allY)), Math.max(...allY, FLUX_TOL));
+    const svg = envelopeSVG(pts, koPts, Math.max(...allX), Math.min(0, Math.min(...allY)), Math.max(...allY, FLUX_TOL), fitWidth(host, 760));
     const prodName = ctx.metName(st.prod) || st.prod;
     host.innerHTML = `
-      ${svg}
+      <div class="chartwrap">${svg}</div>
       <p class="status">Production envelope of ${esc(prodName)} for ${esc(st.acc)} on ${esc(st.mediumLabel)}:
       ${pts.length} of ${wt.points.length} biomass levels solved${failed ? ` (${failed} failed and are not drawn)` : ''},
       ${wt.solves} LPs. The reference max growth is marked; the band spans the minimum to maximum product flux at each biomass level.
@@ -1208,8 +1321,8 @@ export async function initAnalysis(root, ctx) {
     });
   }
 
-  function envelopeSVG(pts, koPts, xMax, yMin, yMax) {
-    const W = 720, H = 400, mL = 64, mR = 16, mT = 16, mB = 48;
+  function envelopeSVG(pts, koPts, xMax, yMin, yMax, W = 720) {
+    const H = 400, mL = 64, mR = 16, mT = 16, mB = 48;
     const iw = W - mL - mR, ih = H - mT - mB;
     if (xMax <= 0) xMax = 1;
     const ySpan = (yMax - yMin) || 1;
@@ -1219,10 +1332,11 @@ export async function initAnalysis(root, ctx) {
     const ticksY = niceTicks(yMin, yMax, 6);
     const line = (arr, key) => arr.map((p, i) => `${i ? 'L' : 'M'}${X(p.mu).toFixed(1)},${Y(p[key]).toFixed(1)}`).join(' ');
     const band = (arr) => line(arr, 'max') + ' ' + [...arr].reverse().map(p => `L${X(p.mu).toFixed(1)},${Y(p.min).toFixed(1)}`).join(' ') + ' Z';
-    const muMark = pts[pts.length - 1].mu;
+    const wtPt = pts[pts.length - 1];
+    const muMark = wtPt.mu;
     return `
-    <svg class="an-envsvg" viewBox="0 0 ${W} ${H}" role="img"
-      aria-label="Production envelope: product flux versus biomass flux, minimum and maximum product at each biomass level${koPts ? ', reference and knockout series' : ''}.">
+    <svg class="an-envsvg" width="${W}" height="${H}" role="img"
+      aria-label="Production envelope: product flux versus biomass flux, minimum and maximum product at each biomass level${koPts ? ', reference and knockout series' : ''}; the reference optimum is marked at max growth.">
       <rect x="${mL}" y="${mT}" width="${iw}" height="${ih}" fill="none" stroke="var(--line)"/>
       ${ticksY.map(t => `<line x1="${mL}" x2="${W - mR}" y1="${Y(t)}" y2="${Y(t)}" stroke="var(--line)" stroke-width="0.5"/>
         <text x="${mL - 6}" y="${Y(t) + 4}" text-anchor="end" class="an-envtick">${tickLabel(t)}</text>`).join('')}
@@ -1237,16 +1351,21 @@ export async function initAnalysis(root, ctx) {
         <path d="${line(koPts, 'max')}" fill="none" stroke="var(--accent-ink)" stroke-width="1.8"/>
         <path d="${line(koPts, 'min')}" fill="none" stroke="var(--accent-ink)" stroke-width="1.8" stroke-dasharray="5 3"/>` : ''}
       <line x1="${X(muMark)}" x2="${X(muMark)}" y1="${mT}" y2="${H - mB}" stroke="var(--line-strong)" stroke-dasharray="2 3"/>
-      <text x="${Math.min(X(muMark), W - mR - 4)}" y="${mT + 14}" text-anchor="end" class="an-envtick">max growth ${fnum(muMark, 3)}</text>
+      <circle cx="${X(wtPt.mu)}" cy="${Y(wtPt.max)}" r="4.5" fill="${koPts ? 'var(--ink-2)' : 'var(--accent-ink)'}" stroke="#FFFFFF" stroke-width="1.5"/>
+      <text x="${Math.min(X(muMark), W - mR - 4)}" y="${mT + 14}" text-anchor="end" class="an-envtick">reference max growth ${fnum(muMark, 3)}</text>
       <text x="${mL + iw / 2}" y="${H - 8}" text-anchor="middle" class="an-envlabel">biomass flux (h⁻¹)</text>
       <text transform="translate(14 ${mT + ih / 2}) rotate(-90)" text-anchor="middle" class="an-envlabel">product flux (mmol gDW⁻¹ h⁻¹)</text>
-      ${koPts ? `
-        <g class="an-envtick">
-          <rect x="${mL + 10}" y="${mT + 8}" width="14" height="10" fill="var(--surface-2)" stroke="var(--ink-2)"/>
-          <text x="${mL + 30}" y="${mT + 17}">reference</text>
+      <g class="an-envtick">
+        <rect x="${mL + 10}" y="${mT + 8}" width="14" height="10" fill="${koPts ? 'var(--surface-2)' : 'var(--accent-wash)'}" stroke="${koPts ? 'var(--ink-2)' : 'var(--accent-ink)'}"/>
+        <text x="${mL + 30}" y="${mT + 17}">reference (min to max product)</text>
+        ${koPts ? `
           <rect x="${mL + 10}" y="${mT + 24}" width="14" height="10" fill="var(--accent-wash)" stroke="var(--accent-ink)"/>
           <text x="${mL + 30}" y="${mT + 33}">with knockouts</text>
-        </g>` : ''}
+          <circle cx="${mL + 17}" cy="${mT + 45}" r="4.5" fill="var(--ink-2)" stroke="#FFFFFF" stroke-width="1.5"/>
+          <text x="${mL + 30}" y="${mT + 49}">reference optimum</text>` : `
+          <circle cx="${mL + 17}" cy="${mT + 29}" r="4.5" fill="var(--accent-ink)" stroke="#FFFFFF" stroke-width="1.5"/>
+          <text x="${mL + 30}" y="${mT + 33}">reference optimum (max growth, max product)</text>`}
+      </g>
     </svg>`;
   }
 
@@ -1304,6 +1423,17 @@ export async function initAnalysis(root, ctx) {
     }
   });
 
+  function fseofChart(res) {
+    if (!res.up.length && !res.down.length) return '';
+    const ups = res.up.slice(0, 10).map(r => ({ label: r.id, value: Math.abs(r.slope) }));
+    const downs = res.down.slice(0, 10).map(r => ({ label: r.id, value: -Math.abs(r.slope) }));
+    const rows = [...ups, ...downs];
+    return chartBlock(
+      `Top expression targets by |slope| (${ups.length} of ${fmt.format(res.up.length)} amplification, ${downs.length} of ${fmt.format(res.down.length)} attenuation)`,
+      `<div class="chartwrap">${divergingBars(rows, { width: fitWidth($('#an-fseof-out'), 560), valueFmt: (v) => Math.abs(v).toFixed(3), posLabel: 'amplification', negLabel: 'attenuation' })}</div>`,
+      'Bar length: |slope| of the reaction flux per unit of enforced product flux; bars to the right are amplification targets (flux rises), bars to the left attenuation targets (flux falls).');
+  }
+
   function fseofTable(list, label, cap) {
     if (!list.length) return `<p class="status">No ${label} target passed the monotonicity test (|flux| change above ${FSEOF_MIN_CHANGE} across the scan, no direction flip).</p>`;
     const rows = list.slice(0, cap);
@@ -1343,6 +1473,7 @@ export async function initAnalysis(root, ctx) {
       ${fmt.format(res.activeInScan)} carried flux in the scan, ${res.signChanging} changed direction and are in neither list.
       Max growth falls from ${fnum(solvedMus[0] ? solvedMus[0].mu : null, 3)} to ${fnum(solvedMus.length ? solvedMus[solvedMus.length - 1].mu : null, 3)} h<sup>-1</sup> along the scan.
       ${nonPfba ? `${nonPfba} of ${res.solvedLevels} levels report a plain (non-parsimonious) optimum because their pFBA failed. ` : ''}${res.solves} LPs in ${secs} s.</p>
+      ${fseofChart(res)}
       <h3>Amplification (over-expression) targets</h3>
       ${fseofTable(res.up, 'amplification', 25)}
       <h3>Attenuation (down-regulation) targets</h3>
@@ -1527,6 +1658,32 @@ export async function initAnalysis(root, ctx) {
     }
   });
 
+  function momaChart(res, fba, wt) {
+    const growth = chartBlock('Growth: wild type vs knockout prediction (h<sup>-1</sup>)',
+      pairedBars([{
+        label: 'max growth', sub: 'h^-1', bars: [
+          { label: 'wild type', value: wt.mu, color: '#98948C' },
+          { label: 'MOMA', value: res.mu, color: 'var(--accent)' },
+          { label: 'FBA', value: fba.mu, color: '#2E7A9E' },
+        ],
+      }], { width: 260, height: 160, valueFmt: (v) => v == null ? 'not computed' : fnum(v, 3) })
+      + `<div class="ch-legend">
+        <span class="ch-lg"><span class="ch-sw" style="background:#98948C"></span>wild type</span>
+        <span class="ch-lg"><span class="ch-sw" style="background:var(--accent)"></span>MOMA knockout</span>
+        <span class="ch-lg"><span class="ch-sw" style="background:#2E7A9E"></span>FBA knockout</span></div>`);
+    const product = st.moma.target ? chartBlock(`Product export: MOMA vs FBA (${UNIT})`,
+      pairedBars([{
+        label: 'product export', sub: 'mmol/gDW/h', bars: [
+          { label: 'MOMA', value: res.product ?? null, color: 'var(--accent)' },
+          { label: 'FBA', value: fba.pfbaOptimal ? (fba.product ?? null) : null, color: '#2E7A9E' },
+        ],
+      }], { width: 220, height: 160, valueFmt: (v) => v == null ? 'not computed' : fnum(v, 3) })
+      + `<div class="ch-legend">
+        <span class="ch-lg"><span class="ch-sw" style="background:var(--accent)"></span>MOMA knockout</span>
+        <span class="ch-lg"><span class="ch-sw" style="background:#2E7A9E"></span>FBA knockout (parsimonious optimum)</span></div>`) : '';
+    return `<div class="chart-grid" style="margin-top:var(--s3)">${growth}${product}</div>`;
+  }
+
   function renderMoma() {
     const out = $('#an-moma-out');
     const { res, fba, wt, kos, secs } = st.moma;
@@ -1553,6 +1710,7 @@ export async function initAnalysis(root, ctx) {
         ${chipHTML('na', `FBA knockout: growth ${fba.mu == null ? esc(fba.statusText) : fnum(fba.mu) + ' h<sup>-1</sup>' + dmu(fba.mu)}`)}
         ${st.moma.target ? chipHTML('na', `product export: MOMA ${fnum(res.product)} · FBA ${fba.pfbaOptimal ? fnum(fba.product) : 'not computed'} ${UNIT}`) : ''}
       </div>
+      ${momaChart(res, fba, wt)}
       <p class="status">${koLine}
       L1 flux adjustment ${fnum(res.distance, 2)} ${UNIT} summed over ${fmt.format(st.gem.reactions.length)} reactions;
       ${fmt.format(shifts.length)} reactions shift by more than 10<sup>-9</sup>.
@@ -1654,6 +1812,21 @@ export async function initAnalysis(root, ctx) {
     }
   });
 
+  function sampleChart(res) {
+    const ranked = [...res.rids].sort((a, b) => {
+      const sa = res.stats.get(a), sb = res.stats.get(b);
+      return (sb.p95 - sb.p5) - (sa.p95 - sa.p5);
+    });
+    const top = ranked.slice(0, 14).map(rid => {
+      const s2 = res.stats.get(rid);
+      return { label: rid, min: s2.min, p5: s2.p5, median: s2.median, p95: s2.p95, max: s2.max };
+    });
+    if (!top.length) return '';
+    return chartBlock(
+      `Widest flux distributions (top ${top.length} of ${fmt.format(res.rids.length)} reactions by 5-95% range, ${res.samples} samples)`,
+      `<div class="chartwrap">${quantileRows(top, { width: fitWidth($('#an-sample-out'), 620), unit: 'mmol/gDW/h' })}</div>`);
+  }
+
   function sampleHisto(rid) {
     const { res } = st.sample;
     const vals = res.raw.get(rid).slice(0, res.samples);
@@ -1687,6 +1860,7 @@ export async function initAnalysis(root, ctx) {
         ${chipHTML('na', `seed ${res.seed}`)}
       </div>
       <p class="status">${res.cancelled ? 'Sampling cancelled early; the statistics below cover the samples collected before the cancel. ' : ''}${res.sampler} over ${fmt.format(res.rids.length)} reactions; each sample is one optimal vertex, so the summaries describe the polytope boundary, not a uniform draw from the interior. ${res.solves} LPs in ${secs} s.</p>
+      ${sampleChart(res)}
       <div class="tablebar">
         <div class="field" style="flex:1 1 220px">
           <label for="an-sample-filter">Filter reactions (id, name)</label>
@@ -1775,9 +1949,13 @@ export async function initAnalysis(root, ctx) {
 
   // -------------------------------------------------------------- exports ----
   renderSweepTable();
+  applyContext(getContext());   // pull the GEM and medium carried from the other stages
   return {
     setActive(v) {
-      if (v && st.gem) prefillEndpoints();
+      if (v) {
+        applyContext(getContext());
+        if (st.gem) prefillEndpoints();
+      }
     },
   };
 }
