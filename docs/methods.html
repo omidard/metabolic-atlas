@@ -12,6 +12,7 @@
   <nav aria-label="Main">
     <a class="navlink" href="index.html#/search">Search map</a>
     <a class="navlink" href="index.html#/gems">GEM browser</a>
+    <a class="navlink" href="index.html#/analysis">Analysis</a>
     <a class="navlink" href="methods.html" aria-current="page">Methods &amp; limitations</a>
   </nav>
   <span class="release">35 GEMs · 4 species · data release 2026-09-17</span>
@@ -218,13 +219,90 @@
   reported and not drawn. With a coupled knockout set from the search, a second envelope
   is solved with those knockouts applied and overlaid.</p>
 
+  <h3>FSEOF expression targets</h3>
+  <p>The FSEOF scan (flux scanning with enforced objective flux) enforces the product's
+  export at 11 evenly spaced levels (10 by default above zero, adjustable 4 to 20) from 0
+  to 95% of its maximum; the top level stops below 100% because at the exact maximum the
+  optimum is a single point where the growth LP is often degenerate. At each level biomass
+  is maximised and the distribution is made parsimonious (pFBA at 99.9% or more of that
+  level's own max growth); a level whose pFBA fails reports the plain optimum and is
+  labelled. A reaction is an amplification (over-expression) target when its |flux| rises
+  monotonically across the solved levels (tolerance 10<sup>-6</sup> per step) by more than
+  10<sup>-4</sup> mmol gDW<sup>-1</sup> h<sup>-1</sup> in total, and an attenuation
+  (down-regulation) target when it falls monotonically by the same margin. Reactions that
+  change flux direction across the scan, or never carry flux, are in neither list.
+  Exchanges, the biomass reaction and the product target are out of scope. The slope is
+  the least-squares slope of |flux| against enforced product flux. Because growth falls as
+  the enforced product rises, the attenuation list includes reactions that shrink only
+  because biomass synthesis shrinks; the amplification list is the specific one. Each
+  level's flux distribution is one parsimonious optimum among possibly several, so
+  membership near the thresholds can depend on the solver's choice of optimum.</p>
+
+  <h3>Linear MOMA</h3>
+  <p>The MOMA prediction (minimisation of metabolic adjustment) is the linear (L1)
+  variant: it minimises the summed absolute deviation |v - v<sub>wt</sub>| over all
+  reactions, subject to S·v = 0 and the bounds with the chosen reactions closed. Each
+  deviation is split into a positive and a negative part, which makes the problem an LP;
+  the original quadratic (L2) MOMA objective needs a quadratic solver and is not computed
+  here. The wild-type reference v<sub>wt</sub> is the parsimonious distribution at 99.9%
+  or more of max growth under the session's current bounds, which is one of possibly
+  several optimal distributions; the MOMA prediction is relative to that choice. The FBA
+  comparison columns re-solve the same knockout under growth maximisation, with the
+  product read from a parsimonious solution. An infeasible MOMA LP means no steady-state
+  flux distribution satisfies the knockout bounds (including any maintenance
+  requirement), and is reported as such.</p>
+
+  <h3>Flux sampling</h3>
+  <p>Sampling is random-objective vertex sampling: each sample is the optimal solution of
+  one random dense linear objective, with coefficients drawn standard-normal for every
+  reaction from a seeded generator, over the feasible flux space of the GEM, medium and
+  session bounds; biomass can optionally be held at or above a chosen fraction of max
+  growth. Every sample is a vertex of the solution polytope. The empirical distributions
+  therefore describe the polytope's boundary as seen from random directions and are an
+  approximation; they are not a uniform sample of the flux space, and interior points are
+  never produced. A uniform sampler (such as ACHR or CHRR) is not implemented. Objectives
+  whose LP fails the optimality or bound check contribute no sample and are counted.
+  Per-reaction summaries report mean, median, the 5-95% interquantile range, and the
+  minimum and maximum over the solved samples; the same seed with the same inputs
+  reproduces the same samples.</p>
+  <table>
+    <thead><tr><th scope="col">Analysis parameter</th><th scope="col">Value</th></tr></thead>
+    <tbody>
+      <tr><td>FSEOF enforced levels</td><td>0 plus 4 to 20 levels (default 10), up to 95% of max product</td></tr>
+      <tr><td>FSEOF monotonicity tolerance</td><td>10<sup>-6</sup> per step; total change above 10<sup>-4</sup> mmol gDW<sup>-1</sup> h<sup>-1</sup></td></tr>
+      <tr><td>MOMA objective</td><td>L1 (sum of absolute deviations), split-variable LP</td></tr>
+      <tr><td>Samples per run</td><td>20 to 500 (default 200)</td></tr>
+      <tr><td>Sampling objective coefficients</td><td>standard normal, seeded (Mulberry32 + Box-Muller)</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Model export</h2>
+  <p>The GEM browser exports the loaded model in two formats, both built in the browser
+  at export time with the session's bound edits written in and counted in the file notes.
+  A medium is a solve-time constraint and is not written into exported bounds; exports
+  carry the model's own (possibly edited) bounds.</p>
+  <p>The SBML export is level 3 version 1 with the fbc version 2 package
+  (<span class="mono">fbc:strict</span>): species with compartment, charge and chemical
+  formula; reactions with stoichiometry and flux bounds as shared constant parameters in
+  mmol gDW<sup>-1</sup> h<sup>-1</sup>; gene associations as fbc gene-product
+  associations parsed from the model's gene rules; and the biomass reaction as the active
+  maximisation objective. A formula that is not strictly elemental (averaged lipid
+  compositions, dotted adducts) is omitted from the SBML rather than written as an
+  invalid value; the JSON export keeps the raw string. A gene rule that fails to parse is
+  omitted from the SBML and counted in the notes. The JSON export follows the COBRA
+  schema (version 1) with the model's identifiers unchanged and cross-references as
+  identifier-style annotations. Both formats round-trip through libSBML and COBRApy;
+  on the reference model the re-imported SBML reproduces this site's growth LP optimum
+  to within 10<sup>-10</sup>.</p>
+
   <h2>Release scope</h2>
   <p>This release covers Mode 1 search, Mode 2 flux feasibility (pFBA and FVA on an
-  editable medium), the 3D union map, the GEM browser, and the Analysis view
-  (single-reaction knockouts, shadow-price and reduced-cost estimates, greedy
-  growth-coupling search, production envelopes). MOMA, FSEOF over- and under-expression
-  designs, flux sampling and SBML export are not part of this release; their controls
-  appear only on the roadmap panel.</p>
+  editable medium), the 3D union map, the GEM browser with SBML and COBRA JSON export,
+  and the Analysis view: single-reaction knockout sweeps, shadow-price and reduced-cost
+  estimates, greedy growth-coupling search, production envelopes, FSEOF expression
+  targets, linear MOMA knockout predictions and flux sampling. Not implemented: quadratic
+  (L2) MOMA, uniform flux samplers (ACHR/CHRR), double-knockout sweeps, and thermodynamic
+  or kinetic constraints.</p>
 
   <h2>Provenance</h2>
   <p>Data release 2026-09-17. All computation runs in the browser; no query leaves the

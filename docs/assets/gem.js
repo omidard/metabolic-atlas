@@ -1,7 +1,7 @@
 // GEM browser: stats, growth anchors, biomass, reactions (editable bounds),
 // metabolites, genes with sequences. One GEM loaded at a time, lazily.
 
-import { loadGem, loadSeqs, getEdit, setEdit, clearEdit, clearAllEdits, editCount, fmt, downloadBlob, csvEscape } from './data.js';
+import { loadGem, loadSeqs, getEdit, setEdit, clearEdit, clearAllEdits, editCount, fmt, downloadBlob, csvEscape, DATA_RELEASE } from './data.js';
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
@@ -23,7 +23,8 @@ export function initGemView(container, indexData, opts = {}) {
     <p class="sub">35 genome-scale models across 4 species. Choose a model to view its
     statistics, growth anchors, biomass formulation, reactions, metabolites and gene
     sequences. Lower and upper bounds are editable in the reactions table; edits are held
-    in memory for this session and apply to every Mode-2 flux solve.</p>
+    in memory for this session, apply to every solve (Mode 2 and the Analysis view), and
+    are written into the SBML and COBRA JSON exports.</p>
     <div class="gem-toolbar">
       <div class="field">
         <label for="gem-select">Model (35 GEMs)</label>
@@ -94,6 +95,11 @@ function renderGem() {
 
   body.innerHTML = `
     <h2>${esc(gem.species)} <span class="mono">${esc(acc)}</span></h2>
+    <div class="cardactions" style="margin:0 0 var(--s3)">
+      <button class="btn small" id="gem-export-sbml" type="button">Export SBML (FBC v2)</button>
+      <button class="btn small" id="gem-export-cobra" type="button">Export COBRA JSON</button>
+      <span class="status" id="gem-export-status" role="status" aria-live="polite">Whole-model exports; session bound edits are written into the file.</span>
+    </div>
     <div class="statgrid">
       ${stat('Genes', fmt.format(s.genes), 'in model')}
       ${stat('Reactions', fmt.format(s.reactions), 'in model')}
@@ -134,6 +140,9 @@ function renderGem() {
     <div id="panel-mets" class="tabpanel" role="tabpanel" aria-labelledby="tab-mets" hidden></div>
     <div id="panel-genes" class="tabpanel" role="tabpanel" aria-labelledby="tab-genes" hidden></div>`;
 
+  body.querySelector('#gem-export-sbml').addEventListener('click', () => exportModel('sbml'));
+  body.querySelector('#gem-export-cobra').addEventListener('click', () => exportModel('cobra'));
+
   renderBiomass();
   renderRxnPanel();
   renderMetPanel();
@@ -150,6 +159,33 @@ function renderGem() {
 
 function stat(k, v, d) {
   return `<div class="stat"><div class="k">${k}</div><div class="v">${v}</div><div class="d">${d}</div></div>`;
+}
+
+// Whole-model export: SBML (level 3 version 1, fbc v2) or COBRA JSON, both
+// with the session's in-memory bound edits applied at click time. The builder
+// loads lazily on first use.
+async function exportModel(kind) {
+  const el = root.querySelector('#gem-export-status');
+  try {
+    el.textContent = 'Building the export…';
+    const mod = await import('./sbml.js');
+    const nEdits = editCount(acc);
+    if (kind === 'sbml') {
+      const { xml, nGprSkipped } = mod.buildSBML(gem, acc, { release: DATA_RELEASE });
+      downloadBlob(xml, `${acc}.xml`, 'application/xml');
+      el.textContent = `${acc}.xml written: ${fmt.format(gem.reactions.length)} reactions, ` +
+        `${fmt.format(gem.metabolites.length)} metabolites, ${fmt.format(gem.genes.length)} gene products; ` +
+        `${nEdits} of ${fmt.format(gem.reactions.length)} reaction bounds carry session edits` +
+        (nGprSkipped ? `; ${nGprSkipped} gene rules could not be parsed and are omitted (kept in the JSON export)` : '') + '.';
+    } else {
+      const { obj } = mod.buildCobraJSON(gem, acc, { release: DATA_RELEASE });
+      downloadBlob(JSON.stringify(obj), `${acc}.cobra.json`, 'application/json');
+      el.textContent = `${acc}.cobra.json written: ${fmt.format(gem.reactions.length)} reactions; ` +
+        `${nEdits} of ${fmt.format(gem.reactions.length)} reaction bounds carry session edits.`;
+    }
+  } catch (e) {
+    el.textContent = `Export failed: ${e.message}. Choose the button again to retry.`;
+  }
 }
 
 function renderBiomass() {
@@ -393,8 +429,8 @@ function indexEntryFor(a) { return indexCache ? indexCache.gems.find(g => g.acc 
 
 function renderGeneList() {
   const list = geneFilter ? gem.genes.filter(g => g.toLowerCase().includes(geneFilter)) : gem.genes;
-  const CAP = 300;
-  const slice = list.slice(0, CAP);
+  const geneMax = 300;
+  const slice = list.slice(0, geneMax);
   root.querySelector('#gene-count').textContent =
     slice.length < list.length
       ? `Showing ${fmt.format(slice.length)} of ${fmt.format(list.length)} matching genes; refine the filter to narrow further.`

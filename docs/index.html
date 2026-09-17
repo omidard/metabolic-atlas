@@ -98,16 +98,15 @@
       </aside>
     </div>
 
-    <div class="phase2" style="margin-top:var(--s5)">
-      <h3>Roadmap (not built yet)</h3>
-      <ul>
-        <li>MOMA (linear) knockout predictions.</li>
-        <li>FSEOF over- and under-expression targets.</li>
-        <li>Flux sampling; full SBML export.</li>
-      </ul>
-      <p>None of these controls appear elsewhere in the interface until they compute real results.
-      Reaction knockouts, growth-coupling search, shadow prices and production envelopes are live
-      on the <a href="#/analysis">Analysis</a> view.</p>
+    <div class="card" style="margin-top:var(--s5);font-size:var(--t-s);color:var(--ink-2)">
+      <h3 style="margin-top:0;color:var(--ink)">Analysis and export</h3>
+      <p style="margin:0;max-width:80ch">The <a href="#/analysis">Analysis</a> view runs single-reaction
+      knockout sweeps, shadow-price and reduced-cost estimates, growth-coupling knockout search,
+      production envelopes, FSEOF over- and under-expression scans, linear (L1) MOMA knockout
+      predictions and flux sampling on any of the 35 GEMs, solved in this browser. The
+      <a href="#/gems">GEM browser</a> exports any model as SBML (FBC v2) or COBRA JSON with session
+      bound edits applied. Definitions, thresholds and limitations:
+      <a href="methods.html#analysis">methods page</a>.</p>
     </div>
   </section>
 
@@ -122,8 +121,10 @@
 </main>
 
 <footer>
-  <span>Metabolic Atlas · Mode 1 pathway search, Mode 2 flux feasibility, knockout and coupling analysis, 3D union map, GEM browser.</span>
+  <span>Metabolic Atlas · Mode 1 pathway search, Mode 2 flux feasibility, knockout / coupling / FSEOF / MOMA / sampling analysis, SBML and JSON export, 3D union map, GEM browser.</span>
   <a href="methods.html">Methods &amp; limitations</a>
+  <a href="DATA_TERMS.md">Data terms</a>
+  <span>Cross-reference data from KEGG, BiGG, MetaNetX, RHEA, ChEBI, SEED, HMDB and BioCyc, each under its own terms.</span>
   <span id="footer-counts"></span>
 </footer>
 

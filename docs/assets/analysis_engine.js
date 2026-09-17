@@ -431,22 +431,24 @@ export async function couplingSearch(S, opts = {}) {
   return fin('not-coupled', 'Search ended without coupling.', { mu });
 }
 
-// Support (|v| > 1e-6) of a parsimonious solution at biomass >= 0.999 * muFix
-// under the session's CURRENT bounds (callers fix the product beforehand).
-// Built as a fresh LP with |v| helper columns, like the Mode-2 pFBA.
-async function pfbaSupport(S, muFix) {
-  if (muFix <= ZERO_MU) return [];
+// Parsimonious flux distribution (min sum |v|) under the session's CURRENT
+// bounds, with optional per-column bound overrides applied to a fresh LP copy;
+// the session LP itself is untouched. Built with |v| helper columns, like the
+// Mode-2 pFBA. Returns the flux of every session column (model reactions plus
+// any target column), or {optimal:false} with the solver status.
+export async function pfbaFluxes(S, opts = {}) {
   const glpk = S.glpk;
   const lp = {
-    name: 'pfba_support',
+    name: 'pfba',
     objective: { direction: glpk.GLP_MIN, name: 'total_flux', vars: [] },
     subjectTo: S.lp.subjectTo.map(r => ({ name: r.name, vars: r.vars, bnds: r.bnds })),
     bounds: S.lp.bounds.map(b => ({ ...b })),
   };
-  for (const b of lp.bounds) if (b.name === S.biomass) {
-    b.lb = 0.999 * muFix;
-    b.ub = Math.max(b.ub, muFix);
-    b.type = boundType(glpk, b.lb, b.ub);
+  for (const f of opts.fix || []) {
+    for (const b of lp.bounds) if (b.name === f.name) {
+      b.lb = f.lb; b.ub = f.ub;
+      b.type = boundType(glpk, f.lb, f.ub);
+    }
   }
   const absVars = [];
   const extra = [];
@@ -461,13 +463,27 @@ async function pfbaSupport(S, muFix) {
   lp.objective.vars = absVars;
   S.solves++;
   const s = await solveLP(glpk, lp);
-  if (!s.optimal) {
+  if (!s.optimal) return { optimal: false, status: s.status };
+  const fluxes = {};
+  for (const b of S.lp.bounds) fluxes[b.name] = s.vars[b.name] ?? null;
+  return { optimal: true, fluxes, totalFlux: s.z };
+}
+
+// Support (|v| > 1e-6) of a parsimonious solution at biomass >= 0.999 * muFix
+// under the session's CURRENT bounds (callers fix the product beforehand).
+async function pfbaSupport(S, muFix) {
+  if (muFix <= ZERO_MU) return [];
+  const bio = S.bIdx.get(S.biomass);
+  const p = await pfbaFluxes(S, {
+    fix: [{ name: S.biomass, lb: 0.999 * muFix, ub: Math.max(bio.ub, muFix) }],
+  });
+  if (!p.optimal) {
     // fall back to the support of a plain (non-parsimonious) solve
     const g = await opt(S, 'max', S.biomass);
     if (!g.optimal) return [];
     return S.gem.reactions.filter(r => Math.abs(g.vars[r.id] ?? 0) > 1e-6).map(r => r.id);
   }
-  return S.gem.reactions.filter(r => Math.abs(s.vars[r.id] ?? 0) > 1e-6).map(r => r.id);
+  return S.gem.reactions.filter(r => Math.abs(p.fluxes[r.id] ?? 0) > 1e-6).map(r => r.id);
 }
 
 // ---------------------------------------------------- production envelope ----
@@ -516,6 +532,322 @@ export function carbonCount(formula) {
   return m[1] ? parseInt(m[1], 10) : 1;
 }
 
+// ------------------------------------------------------------------ FSEOF ----
+// Flux scanning with enforced objective flux: the product export is enforced
+// at nSteps+1 evenly spaced levels from 0 to maxFrac * max product; at each
+// level biomass is maximised and the flux distribution is made parsimonious
+// (pFBA at >= 99.9% of that level's own max growth). A reaction whose |flux|
+// rises monotonically (within tol) across the solved levels by more than
+// FSEOF_MIN_CHANGE is an amplification (over-expression) target; one whose
+// |flux| falls monotonically is an attenuation (down-regulation) target.
+// Reactions that change flux sign across the scan, or are never active, are
+// classified as neither. The slope is the least-squares slope of |flux|
+// against the enforced product flux. Exchanges, the biomass reaction and the
+// target column are out of scope. The top enforced level defaults to 95% of
+// the max product because at 100% the optimum is a single point where the
+// biomass LP is often degenerate.
+export const FSEOF_STEPS = 10;
+export const FSEOF_MAX_FRAC = 0.95;
+export const FSEOF_MIN_CHANGE = 1e-4;   // mmol gDW-1 h-1 of |flux| change across the scan
+const FSEOF_TOL = 1e-6;                 // monotonicity slack per step
+
+export async function fseofScan(S, opts = {}) {
+  const nSteps = opts.nSteps ?? FSEOF_STEPS;
+  const maxFrac = opts.maxFrac ?? FSEOF_MAX_FRAC;
+  const solves0 = S.solves;
+  const fin = (o) => ({ nSteps, maxFrac, solves: S.solves - solves0, ...o });
+  if (!S.target) return fin({ ok: false, reason: 'no product target is set' });
+
+  const g = await opt(S, 'max', S.biomass);
+  if (!g.optimal || g.z <= ZERO_MU) {
+    return fin({
+      ok: false,
+      reason: `max growth on this medium is ${g.optimal ? g.z.toExponential(2) + ' 1/h' : statusName(g.status)}; the scan maximises biomass at each enforced level and needs a growing base state`,
+    });
+  }
+  const p = await opt(S, 'max', S.target.id);
+  if (!p.optimal || p.z <= FLUX_TOL) {
+    return fin({
+      ok: false, productMax: p.optimal ? p.z : null,
+      reason: 'the product cannot be exported on this GEM and medium (max product flux at or below tolerance), so there is no objective flux to enforce',
+    });
+  }
+  const pmax = p.z;
+  const fMax = maxFrac * pmax;
+  const scope = S.gem.reactions.filter(r => !r.ex && r.id !== S.biomass && r.id !== S.target.id);
+  const saved = saveBound(S, S.target.id);
+  const bio = S.bIdx.get(S.biomass);
+  const levels = [];
+  const series = new Map(scope.map(r => [r.id, []]));
+  let cancelled = false;
+  for (let k = 0; k <= nSteps; k++) {
+    if (opts.shouldStop && opts.shouldStop()) { cancelled = true; break; }
+    const f = fMax * k / nSteps;
+    setRange(S, S.target.id, f, Math.max(saved.ub, fMax));
+    const gk = await opt(S, 'max', S.biomass);
+    if (!gk.optimal) {
+      levels.push({ f, mu: null, solved: false, status: gk.status });
+      continue;
+    }
+    const pk = await pfbaFluxes(S, {
+      fix: [{ name: S.biomass, lb: 0.999 * gk.z, ub: Math.max(bio.ub, gk.z) }],
+    });
+    const fl = pk.optimal ? pk.fluxes : gk.vars;
+    levels.push({ f, mu: gk.z, solved: true, pfba: pk.optimal });
+    for (const r of scope) series.get(r.id).push({ f, v: fl[r.id] ?? null });
+    if (opts.onProgress) opts.onProgress(k + 1, nSteps + 1);
+  }
+  restoreBound(S, saved);
+
+  const solvedLevels = levels.filter(l => l.solved);
+  if (solvedLevels.length < 3) {
+    return fin({
+      ok: false, productMax: pmax, fMax, levels, cancelled,
+      reason: `only ${solvedLevels.length} of ${levels.length} enforced levels solved; at least 3 are needed to read a trend`,
+    });
+  }
+
+  const up = [], down = [];
+  let active = 0, signChanging = 0;
+  for (const r of scope) {
+    const pts = series.get(r.id).filter(q => q.v != null);
+    if (pts.length !== solvedLevels.length) continue;   // a level lacked this flux; unclassifiable
+    const a = pts.map(q => Math.abs(q.v));
+    if (Math.max(...a) < FSEOF_TOL) continue;           // never active in the scan
+    active++;
+    const pos = pts.some(q => q.v > FSEOF_TOL);
+    const neg = pts.some(q => q.v < -FSEOF_TOL);
+    if (pos && neg) { signChanging++; continue; }       // direction flips; neither list
+    let inc = true, dec = true;
+    for (let i = 1; i < a.length; i++) {
+      if (a[i] < a[i - 1] - FSEOF_TOL) inc = false;
+      if (a[i] > a[i - 1] + FSEOF_TOL) dec = false;
+    }
+    const rise = a[a.length - 1] - a[0];
+    // least-squares slope of |v| against enforced product flux
+    const n = pts.length;
+    const mx = pts.reduce((s2, q) => s2 + q.f, 0) / n;
+    const my = a.reduce((s2, v) => s2 + v, 0) / n;
+    let sxy = 0, sxx = 0;
+    for (let i = 0; i < n; i++) { sxy += (pts[i].f - mx) * (a[i] - my); sxx += (pts[i].f - mx) ** 2; }
+    const slope = sxx > 0 ? sxy / sxx : 0;
+    const rec = {
+      id: r.id, name: r.name || '', genes: r.genes || [], gpr: r.gpr || '',
+      subsystem: r.subsystem || '', slope,
+      v0: pts[0].v, vEnd: pts[n - 1].v, absChange: rise,
+      fluxes: pts.map(q => q.v),
+    };
+    if (inc && rise > FSEOF_MIN_CHANGE) up.push(rec);
+    else if (dec && -rise > FSEOF_MIN_CHANGE) down.push(rec);
+  }
+  up.sort((x, y) => y.slope - x.slope);
+  down.sort((x, y) => x.slope - y.slope);
+  return fin({
+    ok: true, mu: g.z, productMax: pmax, fMax, levels, cancelled,
+    up, down, scanned: scope.length, activeInScan: active, signChanging,
+    excluded: S.gem.reactions.length - scope.length,
+    total: S.gem.reactions.length,
+    solvedLevels: solvedLevels.length,
+  });
+}
+
+// ----------------------------------------------------------- linear MOMA ----
+// Wild-type reference for MOMA: the parsimonious flux distribution at >= 99.9%
+// of max growth under the session's current bounds. pFBA picks ONE of the
+// possibly many optimal distributions; the MOMA prediction is relative to it.
+export async function wtReference(S) {
+  const g = await opt(S, 'max', S.biomass);
+  if (!g.optimal || g.z <= ZERO_MU) {
+    return { ok: false, mu: g.optimal ? g.z : null, status: g.status, statusText: statusName(g.status) };
+  }
+  const bio = S.bIdx.get(S.biomass);
+  const p = await pfbaFluxes(S, {
+    fix: [{ name: S.biomass, lb: 0.999 * g.z, ub: Math.max(bio.ub, g.z) }],
+  });
+  if (!p.optimal) return { ok: false, mu: g.z, status: p.status, statusText: statusName(p.status) };
+  return { ok: true, mu: g.z, fluxes: p.fluxes, totalFlux: p.totalFlux };
+}
+
+// Linear (L1) MOMA: minimise sum |v - v_wt| subject to S.v = 0 and the session
+// bounds with the given reactions knocked out. Each deviation splits into
+// dp - dn with dp, dn >= 0 and the row v - dp + dn = v_wt, so the LP minimises
+// the exact L1 distance. This is the linear variant; the quadratic (L2) MOMA
+// objective is not solvable with the LP-only solver in this build.
+export async function linearMOMA(S, wtFluxes, koIds, opts = {}) {
+  const glpk = S.glpk;
+  const solves0 = S.solves;
+  const lp = {
+    name: 'lin_moma',
+    objective: { direction: glpk.GLP_MIN, name: 'l1_dist', vars: [] },
+    subjectTo: S.lp.subjectTo.map(r => ({ name: r.name, vars: r.vars, bnds: r.bnds })),
+    bounds: S.lp.bounds.map(b => ({ ...b })),
+  };
+  const missing = [];
+  for (const rid of koIds) {
+    const b = lp.bounds.find(x => x.name === rid);
+    if (!b) { missing.push(rid); continue; }
+    b.lb = 0; b.ub = 0; b.type = glpk.GLP_FX;
+  }
+  const devVars = [];
+  const extra = [];
+  for (const b of S.lp.bounds) {
+    const wt = wtFluxes[b.name];
+    if (wt == null) continue;
+    devVars.push({ name: 'dp_' + b.name, coef: 1 }, { name: 'dn_' + b.name, coef: 1 });
+    lp.bounds.push(
+      { name: 'dp_' + b.name, type: glpk.GLP_LO, lb: 0, ub: BIG },
+      { name: 'dn_' + b.name, type: glpk.GLP_LO, lb: 0, ub: BIG });
+    extra.push({
+      name: 'dev_' + b.name,
+      vars: [{ name: b.name, coef: 1 }, { name: 'dp_' + b.name, coef: -1 }, { name: 'dn_' + b.name, coef: 1 }],
+      bnds: { type: glpk.GLP_FX, lb: wt, ub: wt },
+    });
+  }
+  lp.subjectTo = lp.subjectTo.concat(extra);
+  lp.objective.vars = devVars;
+  S.solves++;
+  const s = await solveLP(glpk, lp);
+  if (!s.optimal) {
+    return { ok: false, status: s.status, statusText: statusName(s.status), missing, solves: S.solves - solves0 };
+  }
+  const fluxes = {};
+  for (const b of S.lp.bounds) fluxes[b.name] = s.vars[b.name] ?? null;
+  return {
+    ok: true, distance: s.z, fluxes,
+    mu: fluxes[S.biomass],
+    product: S.target ? fluxes[S.target.id] : null,
+    missing, solves: S.solves - solves0,
+  };
+}
+
+// FBA prediction for the same knockout set, for the side-by-side comparison:
+// max growth with the knockouts applied, and the product flux in a
+// parsimonious solution at that optimum (one of possibly many optima).
+export async function fbaKnockout(S, koIds) {
+  const saved = [];
+  for (const rid of koIds) {
+    const sb = saveBound(S, rid);
+    if (sb) { saved.push(sb); setFixed(S, rid, 0); }
+  }
+  const g = await opt(S, 'max', S.biomass);
+  const out = {
+    mu: g.optimal ? g.z : null, status: g.status, statusText: statusName(g.status),
+    product: null, pfbaOptimal: false,
+  };
+  if (g.optimal && g.z > ZERO_MU) {
+    const bio = S.bIdx.get(S.biomass);
+    const p = await pfbaFluxes(S, {
+      fix: [{ name: S.biomass, lb: 0.999 * g.z, ub: Math.max(bio.ub, g.z) }],
+    });
+    if (p.optimal) {
+      out.pfbaOptimal = true;
+      out.product = S.target ? (p.fluxes[S.target.id] ?? null) : null;
+      out.fluxes = p.fluxes;
+    }
+  }
+  for (const sb of saved) restoreBound(S, sb);
+  return out;
+}
+
+// ---------------------------------------------------------- flux sampling ----
+// Random-objective vertex sampling of the feasible flux space: each sample is
+// the optimal solution of one random dense linear objective (coefficients
+// drawn standard-normal from a seeded generator) over the session's polytope,
+// optionally with biomass held at >= biomassFrac of max growth. Every sample
+// is therefore a VERTEX of the polytope; the empirical distribution is over
+// vertices weighted by the random-direction measure, NOT a uniform sample of
+// the feasible space. Objectives whose LP fails the optimality or bound check
+// are counted as failed and contribute no sample.
+export function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+export const SAMPLE_DEFAULT_N = 200;
+export const SAMPLE_MAX_N = 500;      // browser cap; stated in the UI
+
+export async function sampleFluxSpace(S, opts = {}) {
+  const n = Math.min(opts.n ?? SAMPLE_DEFAULT_N, SAMPLE_MAX_N);
+  const frac = opts.biomassFrac ?? 0;
+  const seed = opts.seed ?? 1;
+  const solves0 = S.solves;
+  let mu = null, savedBio = null;
+  if (frac > 0) {
+    const g = await opt(S, 'max', S.biomass);
+    if (!g.optimal || g.z <= ZERO_MU) {
+      return {
+        ok: false, solves: S.solves - solves0,
+        reason: `max growth on this medium is ${g.optimal ? g.z.toExponential(2) + ' 1/h' : statusName(g.status)}; a biomass-fraction constraint needs a growing state (set the fraction to 0 to sample without it)`,
+      };
+    }
+    mu = g.z;
+    savedBio = saveBound(S, S.biomass);
+    setRange(S, S.biomass, frac * mu, Math.max(savedBio.ub, mu));
+  }
+  const rids = [...S.gem.reactions.map(r => r.id), ...(S.target && S.target.kind === 'demand' ? [S.target.id] : [])];
+  const store = new Map(rids.map(rid => [rid, new Float64Array(n)]));
+  const rand = mulberry32(seed);
+  // Box-Muller standard normals
+  const randn = () => {
+    let u = 0, v = 0;
+    while (u === 0) u = rand();
+    while (v === 0) v = rand();
+    return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+  };
+  let done = 0, failed = 0;
+  let cancelled = false;
+  for (let i = 0; i < n; i++) {
+    if (opts.shouldStop && opts.shouldStop()) { cancelled = true; break; }
+    S.lp.objective = {
+      direction: S.glpk.GLP_MAX, name: 'rand',
+      vars: rids.map(rid => ({ name: rid, coef: randn() })),
+    };
+    S.solves++;
+    const s = await solveLP(S.glpk, S.lp);
+    if (!s.optimal) { failed++; continue; }
+    for (const rid of rids) store.get(rid)[done] = s.vars[rid] ?? 0;
+    done++;
+    if (opts.onProgress) opts.onProgress(i + 1, n, done, failed);
+  }
+  if (savedBio) restoreBound(S, savedBio);
+
+  const quant = (sorted, q) => {
+    const t = q * (sorted.length - 1);
+    const lo = Math.floor(t), hi = Math.ceil(t);
+    return sorted[lo] + (sorted[hi] - sorted[lo]) * (t - lo);
+  };
+  const stats = new Map();
+  if (done > 0) {
+    for (const rid of rids) {
+      const vals = store.get(rid).slice(0, done);
+      const sorted = Float64Array.from(vals).sort();
+      const mean = vals.reduce((a, b) => a + b, 0) / done;
+      stats.set(rid, {
+        mean,
+        median: quant(sorted, 0.5),
+        p5: quant(sorted, 0.05),
+        p95: quant(sorted, 0.95),
+        min: sorted[0],
+        max: sorted[sorted.length - 1],
+      });
+    }
+  }
+  return {
+    ok: done > 0, requested: n, samples: done, failed, cancelled,
+    mu, frac, seed, stats,
+    raw: store, rids,
+    sampler: 'random-objective vertex sampling',
+    solves: S.solves - solves0,
+    reason: done > 0 ? null : `none of the ${n - (cancelled ? n - done - failed : 0)} attempted objectives returned an optimal, bound-respecting solution`,
+  };
+}
+
+// ------------------------------------------------------------------ yield ----
 export function floorYield(S, floorVars, floor, substrateEx, substrateMid, productMid) {
   if (!floorVars || floor == null || !substrateEx) {
     return { mmol: null, cmol: null, note: 'not computed (no substrate uptake identified)' };

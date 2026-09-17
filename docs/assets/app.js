@@ -158,7 +158,7 @@ async function activateAnalysis() {
       setAccent,
       getEndpoints: () => ({ sub: pickerState.sub.mid, prod: pickerState.prod.mid }),
       mapAvailable: () => !!map,
-      showKOsOnMap: (rids) => {
+      showReactionsOnMap: (rids) => {
         if (!map) return null;
         const res = map.highlightReactions(rids, accentInk());
         location.hash = '#/search';
@@ -443,8 +443,8 @@ function pathwayCard(pw, idx) {
 
   const stepsEl = document.createElement('div');
   pw.steps.forEach((st, i) => {
-    const CAP = 6;
-    const shown = st.rxns.slice(0, CAP);
+    const altMax = 6;
+    const shown = st.rxns.slice(0, altMax);
     const stepDiv = document.createElement('div');
     stepDiv.className = 'step';
     stepDiv.dataset.step = i;
@@ -458,7 +458,7 @@ function pathwayCard(pw, idx) {
           <span class="rn">${esc(r.name || '')}</span>
           <span class="flux-slot"></span>
         </div>`).join('') +
-      (st.rxns.length > CAP ? `<p class="termination">Showing ${CAP} of ${st.rxns.length} alternative reactions for this step.</p>` : '');
+      (st.rxns.length > altMax ? `<p class="termination">Showing ${altMax} of ${st.rxns.length} alternative reactions for this step.</p>` : '');
     stepsEl.appendChild(stepDiv);
   });
   bodyEl.appendChild(stepsEl);

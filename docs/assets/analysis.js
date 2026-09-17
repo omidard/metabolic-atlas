@@ -10,7 +10,9 @@ import { statusName } from './fba.js';
 import {
   analysisTarget, makeSession, baseState, koSweep, sweepScope,
   shadowPrices, reducedCosts, couplingSearch, productionEnvelope, floorYield,
+  fseofScan, wtReference, linearMOMA, fbaKnockout, sampleFluxSpace,
   ZERO_MU, FLUX_TOL, COSTLY_FRAC, SHADOW_EPS,
+  FSEOF_STEPS, FSEOF_MAX_FRAC, FSEOF_MIN_CHANGE, SAMPLE_DEFAULT_N, SAMPLE_MAX_N,
 } from './analysis_engine.js';
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -40,6 +42,10 @@ export async function initAnalysis(root, ctx) {
     sweep: null,             // {rows, refs, stamp, cancelled, sweptOf, ...}
     search: null,            // coupling result {res, stamp}
     env: null,               // {wt:{...}, ko:{...}|null, stamp}
+    fseof: null,             // FSEOF result {res, stamp}
+    moma: null,              // linear-MOMA result {res, fba, wt, kos, stamp}
+    momaKos: [],             // reaction ids picked for the MOMA knockout
+    sample: null,            // sampling result {res, stamp, filter}
     sp: new Map(),           // computed shadow prices mid -> rec (display cache)
     rc: new Map(),
     spStampNote: null,
@@ -58,9 +64,10 @@ export async function initAnalysis(root, ctx) {
   // ------------------------------------------------------------- skeleton ----
   root.innerHTML = `
     <h1>Constraint-based analysis</h1>
-    <p class="sub">Reaction knockouts, growth coupling and production envelopes for one GEM on one
-    medium, solved with GLPK in this browser. Bound edits and knockouts made anywhere in this
-    session apply to every solve. Methods and thresholds are on the
+    <p class="sub">Reaction knockouts, growth coupling, production envelopes, FSEOF expression
+    targets, linear MOMA knockout predictions and flux sampling for one GEM on one medium, solved
+    with GLPK in this browser. Bound edits and knockouts made anywhere in this session apply to
+    every solve. Methods and thresholds are on the
     <a href="methods.html#analysis">methods page</a>.</p>
 
     <div class="card">
@@ -142,6 +149,80 @@ export async function initAnalysis(root, ctx) {
         <span class="status" id="an-env-prog" role="status" aria-live="polite"></span>
       </div>
       <div id="an-env-out"></div>
+    </div>
+
+    <div class="card an-section" id="an-fseof">
+      <h2>Over- and under-expression targets (FSEOF)</h2>
+      <p class="sub">Flux scanning with enforced objective flux: the product's export is enforced at
+      evenly spaced levels from 0 to ${Math.round(FSEOF_MAX_FRAC * 100)}% of its maximum, biomass is
+      maximised at each level, and the flux distribution is made parsimonious. A reaction whose
+      |flux| rises monotonically across the levels is an amplification (over-expression) target; one
+      whose |flux| falls monotonically is an attenuation (down-regulation) target. Reactions that
+      change flux direction, or never carry flux, are neither. The down-target list includes
+      reactions that shrink only because growth shrinks along the scan; the slope column ranks how
+      strongly each flux tracks the enforced product flux.</p>
+      <div class="gem-toolbar">
+        <div class="field">
+          <label for="an-fseof-steps">Enforced levels above zero</label>
+          <input type="number" id="an-fseof-steps" min="4" max="20" step="1" value="${FSEOF_STEPS}" style="width:80px">
+        </div>
+        <button class="btn primary" id="an-fseof-run" type="button" disabled>Run FSEOF scan</button>
+        <button class="btn small" id="an-fseof-cancel" type="button" hidden>Cancel</button>
+      </div>
+      <div id="an-fseof-prog" class="status" role="status" aria-live="polite"></div>
+      <div id="an-fseof-out"></div>
+    </div>
+
+    <div class="card an-section" id="an-moma">
+      <h2>Knockout phenotype by linear MOMA</h2>
+      <p class="sub">Minimisation of metabolic adjustment, linear (L1) variant: the knockout flux
+      state minimises the summed |v - v<sub>wt</sub>| subject to mass balance and the knockout
+      bounds, where v<sub>wt</sub> is the parsimonious wild-type distribution at max growth (one of
+      possibly several optimal distributions). The quadratic (L2) MOMA objective needs a quadratic
+      solver, which this build does not have. The FBA columns show the same knockout under plain
+      growth maximisation, for comparison. Session bound edits, including session knockouts, are
+      part of the reference model; knockouts picked here are applied on top for this prediction
+      only.</p>
+      <div class="gem-toolbar">
+        <div class="field picker an-picker">
+          <label for="an-moma-rxn">Add a reaction knockout (id, name or gene)</label>
+          <input type="text" id="an-moma-rxn" role="combobox" aria-expanded="false"
+                 aria-controls="an-moma-rxn-listbox" aria-autocomplete="list" autocomplete="off"
+                 placeholder="Searches this GEM's non-exchange reactions" disabled>
+          <ul class="listbox" id="an-moma-rxn-listbox" role="listbox" hidden></ul>
+        </div>
+        <button class="btn primary" id="an-moma-run" type="button" disabled>Predict knockout phenotype</button>
+      </div>
+      <div class="chiprow" id="an-moma-kos" style="margin-top:var(--s3)"></div>
+      <div id="an-moma-prog" class="status" role="status" aria-live="polite"></div>
+      <div id="an-moma-out"></div>
+    </div>
+
+    <div class="card an-section" id="an-sample">
+      <h2>Flux sampling</h2>
+      <p class="sub">Random-objective vertex sampling: each sample is the optimal solution of one
+      random dense linear objective (seeded standard-normal coefficients over every reaction) on the
+      feasible flux space, optionally with biomass held at or above a fraction of max growth. Every
+      sample is a vertex of the solution polytope, so the distributions describe the polytope as
+      seen from random directions; this is an approximation, not a uniform sample of the interior.</p>
+      <div class="gem-toolbar">
+        <div class="field">
+          <label for="an-sample-n">Samples (20 to ${SAMPLE_MAX_N})</label>
+          <input type="number" id="an-sample-n" min="20" max="${SAMPLE_MAX_N}" step="10" value="${SAMPLE_DEFAULT_N}" style="width:90px">
+        </div>
+        <div class="field">
+          <label for="an-sample-frac">Min biomass (% of max growth; 0 = unconstrained)</label>
+          <input type="number" id="an-sample-frac" min="0" max="99" step="1" value="0" style="width:90px">
+        </div>
+        <div class="field">
+          <label for="an-sample-seed">Random seed</label>
+          <input type="number" id="an-sample-seed" min="1" step="1" value="1" style="width:80px">
+        </div>
+        <button class="btn primary" id="an-sample-run" type="button" disabled>Sample flux space</button>
+        <button class="btn small" id="an-sample-cancel" type="button" hidden>Cancel</button>
+      </div>
+      <div id="an-sample-prog" class="status" role="status" aria-live="polite"></div>
+      <div id="an-sample-out"></div>
     </div>
 
     <div class="card an-section" id="an-sweep">
@@ -270,8 +351,11 @@ export async function initAnalysis(root, ctx) {
   gemSel.addEventListener('change', async () => {
     const acc = gemSel.value;
     st.gem = null; st.acc = null; st.sub = null; st.prod = null;
+    st.momaKos = [];
     invalidateAll();
     $('#an-sub').value = ''; $('#an-prod').value = '';
+    $('#an-moma-rxn').value = ''; $('#an-moma-rxn').disabled = true;
+    renderMomaKos();
     if (!acc) { refreshEnableState(); renderBase(); return; }
     try {
       $('#an-medstatus').textContent = `Loading GEM ${acc} (about 1 MB)…`;
@@ -317,6 +401,8 @@ export async function initAnalysis(root, ctx) {
     makePicker('prod', items);
     $('#an-sub').disabled = false;
     $('#an-prod').disabled = false;
+    makeMomaPicker();
+    $('#an-moma-rxn').disabled = false;
   }
 
   function makePicker(kind, items) {
@@ -491,6 +577,9 @@ export async function initAnalysis(root, ctx) {
     $('#an-env-run').disabled = !okP || !!st.busy;
     $('#an-sp-run').disabled = !ok || !!st.busy;
     $('#an-rc-run').disabled = !ok || !!st.busy;
+    $('#an-fseof-run').disabled = !okP || !!st.busy;
+    $('#an-moma-run').disabled = !ok || !st.momaKos.length || !!st.busy;
+    $('#an-sample-run').disabled = !ok || !!st.busy;
   }
 
   function invalidateAll() {
@@ -500,7 +589,10 @@ export async function initAnalysis(root, ctx) {
   }
 
   function renderStaleBanners() {
-    for (const [key, obj] of [['#an-couple-out', st.search], ['#an-env-out', st.env], ['#an-sweep-prog', st.sweep]]) {
+    for (const [key, obj] of [
+      ['#an-couple-out', st.search], ['#an-env-out', st.env], ['#an-sweep-prog', st.sweep],
+      ['#an-fseof-out', st.fseof], ['#an-moma-out', st.moma], ['#an-sample-out', st.sample],
+    ]) {
       const el = $(key);
       if (!el || !obj) continue;
       let b = el.querySelector('.an-stale');
@@ -1026,7 +1118,7 @@ export async function initAnalysis(root, ctx) {
     });
     const mapB = out.querySelector('#an-couple-map');
     if (mapB) mapB.addEventListener('click', () => {
-      const r = ctx.showKOsOnMap(res.koSet.map(k => k.id));
+      const r = ctx.showReactionsOnMap(res.koSet.map(k => k.id));
       mapB.insertAdjacentHTML('afterend', `<span class="status"> ${r
         ? `Marked ${r.drawn} of ${res.koSet.length} knockout reaction${res.koSet.length === 1 ? '' : 's'} on the union map${r.missing.length ? ` (${r.missing.length} not in the union graph)` : ''}.`
         : 'The 3D map is unavailable in this session.'}</span>`);
@@ -1172,6 +1264,513 @@ export async function initAnalysis(root, ctx) {
     const out = [];
     for (let v = Math.ceil(lo / step) * step; v <= hi + 1e-9; v += step) out.push(v);
     return out;
+  }
+
+  // ----------------------------------------------------------------- FSEOF ----
+  $('#an-fseof-cancel').addEventListener('click', () => { st.cancelFlag = true; });
+  $('#an-fseof-run').addEventListener('click', async () => {
+    if (!ready() || !st.prod || st.busy) return;
+    startRun('fseof');
+    const prog = $('#an-fseof-prog');
+    const out = $('#an-fseof-out');
+    const btnCancel = $('#an-fseof-cancel');
+    btnCancel.hidden = false;
+    const nSteps = clampInt($('#an-fseof-steps').value, 4, 20, FSEOF_STEPS);
+    const t0 = performance.now();
+    try {
+      const { S, target } = await newSession();
+      if (!target) {
+        out.innerHTML = `<p class="status error">${esc(st.acc)} does not contain the chosen product; pick one from the product list.</p>`;
+        return;
+      }
+      prog.textContent = 'Solving the base state…';
+      const res = await fseofScan(S, {
+        nSteps,
+        shouldStop: () => st.cancelFlag,
+        onProgress: (d, t) => { prog.textContent = `Enforced level ${d} of ${t} solved (2 LPs each: max biomass, then pFBA)…`; },
+      });
+      const secs = ((performance.now() - t0) / 1000).toFixed(0);
+      prog.textContent = res.ok
+        ? `Scan finished in ${secs} s: ${res.up.length} amplification and ${res.down.length} attenuation targets below.`
+        : `Scan stopped in ${secs} s; the reason is below.`;
+      st.fseof = { res, stamp: staleStamp(), secs };
+      renderFseof();
+    } catch (e) {
+      prog.textContent = '';
+      out.innerHTML = `<p class="status error">FSEOF scan failed: ${esc(e.message)}.</p>`;
+    } finally {
+      btnCancel.hidden = true;
+      endRun();
+    }
+  });
+
+  function fseofTable(list, label, cap) {
+    if (!list.length) return `<p class="status">No ${label} target passed the monotonicity test (|flux| change above ${FSEOF_MIN_CHANGE} across the scan, no direction flip).</p>`;
+    const rows = list.slice(0, cap);
+    return `
+      <p class="count">${rows.length < list.length ? `Showing the top ${rows.length} of ${fmt.format(list.length)}` : `${fmt.format(list.length)}`} ${label} target${list.length === 1 ? '' : 's'}, ranked by |slope|${rows.length < list.length ? ' (exports include all)' : ''}.</p>
+      <div class="tablewrap"><table class="data">
+        <thead><tr><th scope="col">Reaction</th><th scope="col">Name</th><th scope="col">Genes</th>
+        <th scope="col">Flux, 0 → max enforced (${UNIT})</th><th scope="col">Slope per unit product</th></tr></thead>
+        <tbody>${rows.map(r => `<tr>
+          <td class="mono">${esc(r.id)}</td>
+          <td>${esc(r.name)}</td>
+          <td class="mono" style="max-width:220px;overflow-wrap:anywhere">${esc((r.genes || []).join(' ') || 'no gene rule')}</td>
+          <td class="mono">${fnum(r.v0, 3)} → ${fnum(r.vEnd, 3)}</td>
+          <td class="mono">${r.slope.toFixed(4)}</td>
+        </tr>`).join('')}</tbody>
+      </table></div>`;
+  }
+
+  function renderFseof() {
+    const out = $('#an-fseof-out');
+    const { res, secs } = st.fseof;
+    if (!res.ok) {
+      out.innerHTML = `<p class="status error">Scan not completed: ${esc(res.reason)}. ${res.solves} LPs in ${secs} s.</p>`;
+      return;
+    }
+    const solvedMus = res.levels.filter(l => l.solved);
+    const nonPfba = solvedMus.filter(l => !l.pfba).length;
+    out.innerHTML = `
+      <div class="an-chips" style="margin-top:var(--s3)">
+        ${chipHTML('na', `max product ${fnum(res.productMax, 3)} ${UNIT}`)}
+        ${chipHTML('na', `${res.solvedLevels} of ${res.levels.length} enforced levels solved (0 to ${fnum(res.fMax, 3)})`)}
+        ${chipHTML(res.up.length ? 'ok' : 'bad', `${res.up.length} amplification target${res.up.length === 1 ? '' : 's'}`)}
+        ${chipHTML('na', `${res.down.length} attenuation target${res.down.length === 1 ? '' : 's'}`)}
+      </div>
+      <p class="status">${res.cancelled ? 'Scan cancelled early; the classification below uses the levels solved before the cancel. ' : ''}Scope:
+      ${fmt.format(res.scanned)} of ${fmt.format(res.total)} reactions (${fmt.format(res.excluded)} exchanges, biomass and the product target excluded);
+      ${fmt.format(res.activeInScan)} carried flux in the scan, ${res.signChanging} changed direction and are in neither list.
+      Max growth falls from ${fnum(solvedMus[0] ? solvedMus[0].mu : null, 3)} to ${fnum(solvedMus.length ? solvedMus[solvedMus.length - 1].mu : null, 3)} h<sup>-1</sup> along the scan.
+      ${nonPfba ? `${nonPfba} of ${res.solvedLevels} levels report a plain (non-parsimonious) optimum because their pFBA failed. ` : ''}${res.solves} LPs in ${secs} s.</p>
+      <h3>Amplification (over-expression) targets</h3>
+      ${fseofTable(res.up, 'amplification', 25)}
+      <h3>Attenuation (down-regulation) targets</h3>
+      ${fseofTable(res.down, 'attenuation', 25)}
+      <details style="margin-top:var(--s3)"><summary style="cursor:pointer">Enforced levels (${res.levels.length})</summary>
+        <div class="tablewrap" style="max-width:480px"><table class="data">
+          <thead><tr><th scope="col">Enforced product (${UNIT})</th><th scope="col">Max growth (h<sup>-1</sup>)</th><th scope="col">Distribution</th></tr></thead>
+          <tbody>${res.levels.map(l => `<tr><td class="mono">${l.f.toFixed(4)}</td>
+            <td class="mono">${l.solved ? fnum(l.mu) : esc(statusName(l.status))}</td>
+            <td>${l.solved ? (l.pfba ? 'pFBA' : 'plain optimum (pFBA failed)') : 'not solved'}</td></tr>`).join('')}</tbody>
+        </table></div>
+      </details>
+      <div class="cardactions" style="margin-top:var(--s3)">
+        <button class="btn small" type="button" id="an-fseof-csv">Export CSV</button>
+        <button class="btn small" type="button" id="an-fseof-json">Export JSON</button>
+        ${res.up.length && ctx.mapAvailable() ? '<button class="btn small" type="button" id="an-fseof-map">Show top amplification targets on the 3D map</button>' : ''}
+      </div>`;
+    out.querySelector('#an-fseof-csv').addEventListener('click', () => exportFseof('csv'));
+    out.querySelector('#an-fseof-json').addEventListener('click', () => exportFseof('json'));
+    const mapB = out.querySelector('#an-fseof-map');
+    if (mapB) mapB.addEventListener('click', () => {
+      const ids = res.up.slice(0, 10).map(r => r.id);
+      const r = ctx.showReactionsOnMap(ids);
+      mapB.insertAdjacentHTML('afterend', `<span class="status"> ${r
+        ? `Marked ${r.drawn} of ${ids.length} top target${ids.length === 1 ? '' : 's'} on the union map${r.missing.length ? ` (${r.missing.length} not in the union graph)` : ''}.`
+        : 'The 3D map is unavailable in this session.'}</span>`);
+    });
+  }
+
+  function exportFseof(kind) {
+    if (!st.fseof || !st.fseof.res.ok) return;
+    const res = st.fseof.res;
+    const meta = {
+      method: 'FSEOF (flux scanning with enforced objective flux), linear programming, biomass maximised then pFBA at each enforced product level',
+      gem: st.acc, species: st.gem.species, medium: st.mediumLabel,
+      substrate: st.sub, product: st.prod,
+      product_max: res.productMax, top_enforced_level: res.fMax, enforced_fraction_of_max: res.maxFrac,
+      levels_solved: `${res.solvedLevels} of ${res.levels.length}`,
+      scope: `${res.scanned} of ${res.total} reactions (${res.excluded} exchanges, biomass and target excluded)`,
+      active_in_scan: res.activeInScan, sign_changing_excluded: res.signChanging,
+      classification: `amplification: |flux| monotonically rising by > ${FSEOF_MIN_CHANGE} across the solved levels; attenuation: monotonically falling; tolerance 1e-6 per step`,
+      cancelled: res.cancelled,
+      units: 'fluxes in mmol/gDW/h; slope per unit of enforced product flux',
+      session_bound_edits: listEdits(st.acc),
+      levels: res.levels.map(l => ({ enforced_product: l.f, mu: l.mu, solved: l.solved, distribution: l.solved ? (l.pfba ? 'pFBA' : 'plain') : null })),
+    };
+    const base = `fseof_${st.acc}_${st.prod}`;
+    if (kind === 'json') {
+      const pack = (r) => ({
+        reaction: r.id, name: r.name, genes: r.genes, gpr: r.gpr, subsystem: r.subsystem,
+        slope: r.slope, flux_start: r.v0, flux_end: r.vEnd, abs_flux_change: r.absChange,
+        flux_per_level: r.fluxes,
+      });
+      downloadBlob(JSON.stringify({ meta, amplification_targets: res.up.map(pack), attenuation_targets: res.down.map(pack) }, null, 1),
+        `${base}.json`, 'application/json');
+    } else {
+      const head = 'trend,reaction,name,genes,subsystem,slope_per_unit_product,flux_at_zero,flux_at_max_enforced,abs_flux_change';
+      const row = (t, r) => [t, r.id, r.name, (r.genes || []).join(';'), r.subsystem, r.slope, r.v0, r.vEnd, r.absChange].map(csvEscape).join(',');
+      const csv = [
+        `# FSEOF targets: GEM ${meta.gem} on ${meta.medium}; product ${meta.product}; ${res.up.length} amplification + ${res.down.length} attenuation of ${meta.scope}; ${meta.levels_solved} levels; ${meta.classification}`,
+        head,
+        ...res.up.map(r => row('amplification', r)),
+        ...res.down.map(r => row('attenuation', r)),
+      ].join('\n');
+      downloadBlob(csv, `${base}.csv`, 'text/csv');
+    }
+  }
+
+  // ----------------------------------------------------------- linear MOMA ----
+  function makeMomaPicker() {
+    const input = $('#an-moma-rxn');
+    const listbox = $('#an-moma-rxn-listbox');
+    const items = st.gem.reactions.filter(r => !r.ex && r.id !== st.gem.stats.biomass_id);
+    let options = [], active = -1;
+    const close = () => { listbox.hidden = true; input.setAttribute('aria-expanded', 'false'); active = -1; };
+    const open = () => { listbox.hidden = false; input.setAttribute('aria-expanded', 'true'); };
+    const choose = (rid) => {
+      if (!st.momaKos.includes(rid)) st.momaKos.push(rid);
+      input.value = '';
+      close();
+      renderMomaKos();
+      refreshEnableState();
+    };
+    const render = (q) => {
+      const query = q.trim().toLowerCase();
+      if (!query) { close(); return; }
+      const scored = [];
+      for (const r of items) {
+        const idL = r.id.toLowerCase(), nmL = (r.name || '').toLowerCase();
+        const inGenes = (r.genes || []).some(g => g.toLowerCase().includes(query));
+        let s = -1;
+        if (idL === query) s = 0;
+        else if (idL.startsWith(query) || nmL.startsWith(query)) s = 1;
+        else if (idL.includes(query) || nmL.includes(query) || inGenes) s = 2;
+        if (s >= 0) scored.push([s, r]);
+      }
+      scored.sort((a, b) => a[0] - b[0] || a[1].id.localeCompare(b[1].id));
+      const all = scored.map(x => x[1]);
+      options = all.slice(0, 40);
+      if (!all.length) {
+        listbox.innerHTML = `<li class="mcap" role="presentation">No non-exchange reaction of ${esc(st.acc)} matches "${esc(q)}" (searching ${fmt.format(items.length)} ids, names and genes).</li>`;
+        open(); return;
+      }
+      const cap = all.length > options.length
+        ? `<li class="mcap" role="presentation">Showing ${options.length} of ${fmt.format(all.length)} matches; keep typing to narrow.</li>` : '';
+      listbox.innerHTML = options.map((r, i) => `
+        <li id="an-moma-rxn-opt-${i}" role="option" aria-selected="false" data-rid="${esc(r.id)}">
+          <span class="mname-primary">${esc(r.id)}</span>
+          ${r.name ? `<span class="mid">${esc(r.name)}</span>` : ''}
+        </li>`).join('') + cap;
+      listbox.querySelectorAll('li[role="option"]').forEach(li => {
+        li.addEventListener('mousedown', (e) => { e.preventDefault(); choose(li.dataset.rid); });
+      });
+      open();
+    };
+    const setActive = (i) => {
+      const lis = listbox.querySelectorAll('li[role="option"]');
+      if (!lis.length) return;
+      active = (i + lis.length) % lis.length;
+      lis.forEach((li, j) => li.setAttribute('aria-selected', String(j === active)));
+      input.setAttribute('aria-activedescendant', `an-moma-rxn-opt-${active}`);
+      lis[active].scrollIntoView({ block: 'nearest' });
+    };
+    input.oninput = () => render(input.value);
+    input.onblur = () => setTimeout(close, 120);
+    input.onkeydown = (e) => {
+      if (listbox.hidden && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) { render(input.value); return; }
+      if (e.key === 'ArrowDown') { e.preventDefault(); setActive(active + 1); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); setActive(active - 1); }
+      else if (e.key === 'Enter') {
+        if (!listbox.hidden && active >= 0 && options[active]) { e.preventDefault(); choose(options[active].id); }
+      } else if (e.key === 'Escape') close();
+    };
+  }
+
+  function renderMomaKos() {
+    const host = $('#an-moma-kos');
+    if (!st.momaKos.length) {
+      host.innerHTML = st.gem ? '<span class="status">No knockout picked yet; add at least one reaction above.</span>' : '';
+      return;
+    }
+    host.innerHTML = st.momaKos.map(rid => `
+      <span class="an-kochip"><span class="mono">${esc(rid)}</span>
+        <button class="btn small" type="button" data-unpick="${esc(rid)}" aria-label="Remove ${esc(rid)} from the knockout">Remove</button>
+      </span>`).join('');
+    host.querySelectorAll('button[data-unpick]').forEach(b => b.addEventListener('click', () => {
+      st.momaKos = st.momaKos.filter(x => x !== b.dataset.unpick);
+      renderMomaKos();
+      refreshEnableState();
+    }));
+  }
+
+  $('#an-moma-run').addEventListener('click', async () => {
+    if (!ready() || !st.momaKos.length || st.busy) return;
+    startRun('moma');
+    const prog = $('#an-moma-prog');
+    const out = $('#an-moma-out');
+    const kos = [...st.momaKos];
+    const t0 = performance.now();
+    try {
+      const { S, target } = await newSession();
+      prog.textContent = 'Solving the wild-type reference (max growth, then pFBA)…';
+      const wt = await wtReference(S);
+      if (!wt.ok) {
+        out.innerHTML = `<p class="status error">No wild-type reference: ${wt.mu == null ? `the growth LP was ${esc(wt.statusText)}` : `max growth is ${fnum(wt.mu)} h<sup>-1</sup>, at or below the ${ZERO_MU} viability tolerance, or its pFBA was ${esc(wt.statusText)}`} on this GEM and medium. MOMA needs a growing reference state.</p>`;
+        prog.textContent = '';
+        return;
+      }
+      prog.textContent = 'Solving the FBA knockout prediction (max growth, then pFBA)…';
+      const fba = await fbaKnockout(S, kos);
+      prog.textContent = `Solving the linear MOMA LP (${fmt.format(2 * S.gem.reactions.length)} deviation columns)…`;
+      const mm = await linearMOMA(S, wt.fluxes, kos);
+      const secs = ((performance.now() - t0) / 1000).toFixed(1);
+      prog.textContent = `Prediction finished in ${secs} s; results below.`;
+      st.moma = { res: mm, fba, wt, kos, target: !!target, stamp: staleStamp(), secs, solves: S.solves };
+      renderMoma();
+    } catch (e) {
+      prog.textContent = '';
+      out.innerHTML = `<p class="status error">MOMA prediction failed: ${esc(e.message)}.</p>`;
+    } finally {
+      endRun();
+    }
+  });
+
+  function renderMoma() {
+    const out = $('#an-moma-out');
+    const { res, fba, wt, kos, secs } = st.moma;
+    const koLine = `Knockout: ${kos.map(k => `<span class="mono">${esc(k)}</span>`).join(' + ')}.`;
+    if (!res.ok) {
+      out.innerHTML = `
+        <p class="status error">${koLine} The MOMA LP was ${esc(res.statusText)}: no steady-state flux distribution
+        satisfies the knockout bounds, so the knockout is lethal in the strict sense of admitting no flux state at all.
+        Wild-type max growth ${fnum(wt.mu)} h<sup>-1</sup>. ${res.missing.length ? `${res.missing.length} picked id${res.missing.length === 1 ? ' was' : 's were'} not in the model: ${res.missing.map(esc).join(', ')}.` : ''}</p>`;
+      return;
+    }
+    const dmu = (v) => (v == null || wt.mu == null || wt.mu <= ZERO_MU) ? '' : ` (${(v / wt.mu * 100).toFixed(1)}% of wild type)`;
+    const shifts = st.gem.reactions
+      .map(r => ({ id: r.id, name: r.name || '', wt: wt.fluxes[r.id] ?? null, ko: res.fluxes[r.id] ?? null }))
+      .filter(s => s.wt != null && s.ko != null)
+      .map(s => ({ ...s, d: s.ko - s.wt }))
+      .filter(s => Math.abs(s.d) > 1e-9)
+      .sort((a, b) => Math.abs(b.d) - Math.abs(a.d));
+    const top = shifts.slice(0, 20);
+    out.innerHTML = `
+      <div class="an-chips" style="margin-top:var(--s3)">
+        ${chipHTML('na', `wild type: growth ${fnum(wt.mu)} h<sup>-1</sup>`)}
+        ${chipHTML(res.mu != null && res.mu > ZERO_MU ? 'ok' : 'bad', `MOMA knockout: growth ${fnum(res.mu)} h<sup>-1</sup>${dmu(res.mu)}`)}
+        ${chipHTML('na', `FBA knockout: growth ${fba.mu == null ? esc(fba.statusText) : fnum(fba.mu) + ' h<sup>-1</sup>' + dmu(fba.mu)}`)}
+        ${st.moma.target ? chipHTML('na', `product export: MOMA ${fnum(res.product)} · FBA ${fba.pfbaOptimal ? fnum(fba.product) : 'not computed'} ${UNIT}`) : ''}
+      </div>
+      <p class="status">${koLine}
+      L1 flux adjustment ${fnum(res.distance, 2)} ${UNIT} summed over ${fmt.format(st.gem.reactions.length)} reactions;
+      ${fmt.format(shifts.length)} reactions shift by more than 10<sup>-9</sup>.
+      The FBA product value is read from a parsimonious max-growth solution and is one of possibly several optima${st.moma.target ? '' : '; no product target is set, so product columns are omitted'}.
+      ${res.missing.length ? `${res.missing.length} picked id${res.missing.length === 1 ? ' was' : 's were'} not in the model and ignored: ${res.missing.map(esc).join(', ')}.` : ''}
+      ${st.moma.solves} LPs in ${secs} s.</p>
+      ${top.length ? `
+      <p class="count">Largest flux shifts: showing ${top.length} of ${fmt.format(shifts.length)} shifted reactions (export includes all).</p>
+      <div class="tablewrap" style="max-width:760px"><table class="data">
+        <thead><tr><th scope="col">Reaction</th><th scope="col">Name</th>
+        <th scope="col">Wild-type flux (${UNIT})</th><th scope="col">MOMA flux (${UNIT})</th><th scope="col">Shift</th></tr></thead>
+        <tbody>${top.map(s => `<tr>
+          <td class="mono">${esc(s.id)}</td><td>${esc(s.name)}</td>
+          <td class="mono">${fnum(s.wt, 3)}</td><td class="mono">${fnum(s.ko, 3)}</td>
+          <td class="mono">${(s.d >= 0 ? '+' : '') + s.d.toFixed(3)}</td>
+        </tr>`).join('')}</tbody>
+      </table></div>` : '<p class="status">No reaction shifts by more than 10<sup>-9</sup>; the knockout does not disturb the reference distribution.</p>'}
+      <div class="cardactions" style="margin-top:var(--s3)">
+        <button class="btn small" type="button" id="an-moma-csv">Export CSV</button>
+        <button class="btn small" type="button" id="an-moma-json">Export JSON</button>
+        <button class="btn small" type="button" id="an-moma-apply">Apply knockout to the session</button>
+      </div>`;
+    out.querySelector('#an-moma-csv').addEventListener('click', () => exportMoma('csv'));
+    out.querySelector('#an-moma-json').addEventListener('click', () => exportMoma('json'));
+    const apply = out.querySelector('#an-moma-apply');
+    apply.addEventListener('click', () => {
+      for (const k of kos) setEdit(st.acc, k, 0, 0);
+      apply.disabled = true;
+      apply.textContent = `Applied ${kos.length} knockout${kos.length === 1 ? '' : 's'} (now part of every solve)`;
+    });
+  }
+
+  function exportMoma(kind) {
+    if (!st.moma || !st.moma.res.ok) return;
+    const { res, fba, wt, kos } = st.moma;
+    const meta = {
+      method: 'linear (L1) MOMA: minimise sum |v - v_wt| s.t. S.v = 0 and knockout bounds; v_wt is the parsimonious wild-type distribution at max growth (one of possibly several optima). Not the quadratic MOMA.',
+      gem: st.acc, species: st.gem.species, medium: st.mediumLabel,
+      substrate: st.sub, product: st.prod, knockouts: kos,
+      wild_type_mu: wt.mu, moma_mu: res.mu, fba_mu: fba.mu,
+      moma_product: res.product, fba_product_parsimonious: fba.pfbaOptimal ? fba.product : null,
+      l1_distance: res.distance,
+      units: 'mu in 1/h; fluxes in mmol/gDW/h',
+      session_bound_edits: listEdits(st.acc),
+    };
+    const rows = st.gem.reactions.map(r => ({
+      reaction: r.id, name: r.name || '',
+      wt_flux: wt.fluxes[r.id] ?? null, moma_flux: res.fluxes[r.id] ?? null,
+      shift: (wt.fluxes[r.id] != null && res.fluxes[r.id] != null) ? res.fluxes[r.id] - wt.fluxes[r.id] : null,
+    }));
+    const base = `moma_${st.acc}_${kos.join('+')}`;
+    if (kind === 'json') {
+      downloadBlob(JSON.stringify({ meta, rows }, null, 1), `${base}.json`, 'application/json');
+    } else {
+      const csv = [
+        `# linear (L1) MOMA: GEM ${meta.gem} on ${meta.medium}; KO ${kos.join('+')}; wt mu ${meta.wild_type_mu}; MOMA mu ${meta.moma_mu}; FBA mu ${meta.fba_mu}; L1 distance ${meta.l1_distance}; ${meta.method}`,
+        'reaction,name,wt_flux,moma_flux,shift',
+        ...rows.map(r => [r.reaction, r.name, r.wt_flux, r.moma_flux, r.shift].map(csvEscape).join(',')),
+      ].join('\n');
+      downloadBlob(csv, `${base}.csv`, 'text/csv');
+    }
+  }
+
+  // -------------------------------------------------------------- sampling ----
+  $('#an-sample-cancel').addEventListener('click', () => { st.cancelFlag = true; });
+  $('#an-sample-run').addEventListener('click', async () => {
+    if (!ready() || st.busy) return;
+    startRun('sample');
+    const prog = $('#an-sample-prog');
+    const out = $('#an-sample-out');
+    const btnCancel = $('#an-sample-cancel');
+    btnCancel.hidden = false;
+    const n = clampInt($('#an-sample-n').value, 20, SAMPLE_MAX_N, SAMPLE_DEFAULT_N);
+    const fracPct = clampInt($('#an-sample-frac').value, 0, 99, 0);
+    const seed = clampInt($('#an-sample-seed').value, 1, 2 ** 31 - 1, 1);
+    const t0 = performance.now();
+    try {
+      const { S } = await newSession();
+      const res = await sampleFluxSpace(S, {
+        n, biomassFrac: fracPct / 100, seed,
+        shouldStop: () => st.cancelFlag,
+        onProgress: (att, tot, done, failed) => {
+          const rate = (performance.now() - t0) / att;
+          prog.textContent = `Objective ${att} of ${tot} solved (${done} samples, ${failed} failed) · about ${etaText((tot - att) * rate)} remaining…`;
+        },
+      });
+      const secs = ((performance.now() - t0) / 1000).toFixed(0);
+      prog.textContent = res.ok
+        ? `Sampling finished in ${secs} s: ${res.samples} of ${res.requested} samples below.`
+        : `Sampling stopped in ${secs} s; the reason is below.`;
+      st.sample = { res, stamp: staleStamp(), secs, filter: '' };
+      renderSample();
+    } catch (e) {
+      prog.textContent = '';
+      out.innerHTML = `<p class="status error">Sampling failed: ${esc(e.message)}.</p>`;
+    } finally {
+      btnCancel.hidden = true;
+      endRun();
+    }
+  });
+
+  function sampleHisto(rid) {
+    const { res } = st.sample;
+    const vals = res.raw.get(rid).slice(0, res.samples);
+    const s2 = res.stats.get(rid);
+    const lo = s2.min, hi = s2.max;
+    const W = 120, H = 24, BINS = 16;
+    if (hi - lo < 1e-12) {
+      return `<svg class="an-histo" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" aria-hidden="true"><line x1="${W / 2}" x2="${W / 2}" y1="2" y2="${H - 2}" stroke="var(--accent-ink)" stroke-width="2"/></svg>`;
+    }
+    const bins = new Array(BINS).fill(0);
+    for (const v of vals) bins[Math.min(BINS - 1, Math.floor((v - lo) / (hi - lo) * BINS))]++;
+    const bMax = Math.max(...bins);
+    const bw = W / BINS;
+    return `<svg class="an-histo" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" aria-hidden="true">${bins.map((b, i) =>
+      b ? `<rect x="${(i * bw + 0.5).toFixed(1)}" y="${(H - b / bMax * (H - 2)).toFixed(1)}" width="${(bw - 1).toFixed(1)}" height="${(b / bMax * (H - 2)).toFixed(1)}" fill="var(--accent)"/>` : ''
+    ).join('')}</svg>`;
+  }
+
+  function renderSample() {
+    const out = $('#an-sample-out');
+    const { res, secs } = st.sample;
+    if (!res.ok) {
+      out.innerHTML = `<p class="status error">No samples: ${esc(res.reason)}. ${res.solves} LPs in ${secs} s.</p>`;
+      return;
+    }
+    out.innerHTML = `
+      <div class="an-chips" style="margin-top:var(--s3)">
+        ${chipHTML('ok', `${res.samples} of ${res.requested} samples solved`)}
+        ${res.failed ? chipHTML('bad', `${res.failed} objectives returned no optimum`) : ''}
+        ${chipHTML('na', res.frac > 0 ? `biomass held ≥ ${(res.frac * 100).toFixed(0)}% of max growth (${fnum(res.mu, 3)} h<sup>-1</sup>)` : 'biomass unconstrained (zero-growth states included)')}
+        ${chipHTML('na', `seed ${res.seed}`)}
+      </div>
+      <p class="status">${res.cancelled ? 'Sampling cancelled early; the statistics below cover the samples collected before the cancel. ' : ''}${res.sampler} over ${fmt.format(res.rids.length)} reactions; each sample is one optimal vertex, so the summaries describe the polytope boundary, not a uniform draw from the interior. ${res.solves} LPs in ${secs} s.</p>
+      <div class="tablebar">
+        <div class="field" style="flex:1 1 220px">
+          <label for="an-sample-filter">Filter reactions (id, name)</label>
+          <input type="search" id="an-sample-filter" placeholder="e.g. PGK or transport" value="${esc(st.sample.filter)}">
+        </div>
+        <button class="btn small" type="button" id="an-sample-csv">Export statistics CSV</button>
+        <button class="btn small" type="button" id="an-sample-json">Export samples JSON</button>
+      </div>
+      <p class="count" id="an-sample-count" role="status" aria-live="polite"></p>
+      <div class="tablewrap"><table class="data" id="an-sample-table">
+        <thead><tr><th scope="col">Reaction</th><th scope="col">Name</th>
+        <th scope="col">Mean (${UNIT})</th><th scope="col">Median</th>
+        <th scope="col">5-95% range</th><th scope="col">Min … max</th>
+        <th scope="col">Distribution (${res.samples} samples)</th></tr></thead>
+        <tbody></tbody>
+      </table></div>`;
+    out.querySelector('#an-sample-filter').addEventListener('input', (e) => {
+      st.sample.filter = e.target.value.trim().toLowerCase();
+      renderSampleRows();
+    });
+    out.querySelector('#an-sample-csv').addEventListener('click', () => exportSample('csv'));
+    out.querySelector('#an-sample-json').addEventListener('click', () => exportSample('json'));
+    renderSampleRows();
+  }
+
+  function renderSampleRows() {
+    const { res } = st.sample;
+    const q = st.sample.filter;
+    const nameOf = (rid) => {
+      const r = st.gem.reactions.find(x => x.id === rid);
+      return r ? (r.name || '') : (rid === (res.rids[res.rids.length - 1]) ? 'added product demand' : '');
+    };
+    let list = res.rids;
+    if (q) list = list.filter(rid => rid.toLowerCase().includes(q) || nameOf(rid).toLowerCase().includes(q));
+    const ranked = [...list].sort((a, b) => {
+      const sa = res.stats.get(a), sb = res.stats.get(b);
+      return (sb.p95 - sb.p5) - (sa.p95 - sa.p5);
+    });
+    const shownMax = 30;
+    const slice = ranked.slice(0, shownMax);
+    $('#an-sample-count').textContent =
+      `Showing ${slice.length} of ${fmt.format(ranked.length)} ${q ? `matching reactions (filtered from ${fmt.format(res.rids.length)})` : 'reactions'}, widest 5-95% range first; the CSV export includes all ${fmt.format(res.rids.length)}.`;
+    $('#an-sample-table tbody').innerHTML = slice.map(rid => {
+      const s2 = res.stats.get(rid);
+      return `<tr>
+        <td class="mono">${esc(rid)}</td><td>${esc(nameOf(rid))}</td>
+        <td class="mono">${fnum(s2.mean, 3)}</td><td class="mono">${fnum(s2.median, 3)}</td>
+        <td class="mono">[${fnum(s2.p5, 3)}, ${fnum(s2.p95, 3)}]</td>
+        <td class="mono">${fnum(s2.min, 3)} … ${fnum(s2.max, 3)}</td>
+        <td>${sampleHisto(rid)}</td>
+      </tr>`;
+    }).join('') || `<tr><td colspan="7" class="an-note">No reaction matches "${esc(q)}".</td></tr>`;
+  }
+
+  function exportSample(kind) {
+    if (!st.sample || !st.sample.res.ok) return;
+    const res = st.sample.res;
+    const meta = {
+      method: `${res.sampler}: each sample is the optimal solution of one random dense linear objective (seeded standard-normal coefficients); samples are polytope vertices, not a uniform sample of the flux space`,
+      gem: st.acc, species: st.gem.species, medium: st.mediumLabel,
+      samples_solved: res.samples, samples_requested: res.requested, objectives_failed: res.failed,
+      cancelled: res.cancelled, seed: res.seed,
+      biomass_constraint: res.frac > 0 ? `biomass >= ${res.frac} x max growth (${res.mu} 1/h)` : 'none (zero-growth states included)',
+      reactions: res.rids.length,
+      units: 'mmol/gDW/h',
+      session_bound_edits: listEdits(st.acc),
+    };
+    if (kind === 'json') {
+      const round6 = (v) => Math.round(v * 1e6) / 1e6;
+      const samples = {};
+      for (const rid of res.rids) samples[rid] = [...res.raw.get(rid).slice(0, res.samples)].map(round6);
+      downloadBlob(JSON.stringify({ meta, samples_rounded_to_1e6: samples }, null, 0),
+        `flux_samples_${st.acc}.json`, 'application/json');
+    } else {
+      const csv = [
+        `# flux sampling statistics: GEM ${meta.gem} on ${meta.medium}; ${res.samples} of ${res.requested} samples (${res.failed} failed); seed ${res.seed}; ${meta.biomass_constraint}; ${meta.method}`,
+        'reaction,mean,median,p5,p95,min,max,n_samples',
+        ...res.rids.map(rid => {
+          const s2 = res.stats.get(rid);
+          return [rid, s2.mean, s2.median, s2.p5, s2.p95, s2.min, s2.max, res.samples].map(csvEscape).join(',');
+        }),
+      ].join('\n');
+      downloadBlob(csv, `flux_sampling_${st.acc}.csv`, 'text/csv');
+    }
   }
 
   // -------------------------------------------------------------- exports ----

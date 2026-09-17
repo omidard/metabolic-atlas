@@ -1,6 +1,8 @@
 // Data loading and caching. All fetches are relative to docs/ root.
 // Absent values stay null; loaders never invent a 0.
 
+export const DATA_RELEASE = '2026-09-17';
+
 const cache = new Map();
 
 async function fetchJSON(url, label, onStatus) {
