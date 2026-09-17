@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Methods and limitations · Metabolic Atlas</title>
+<link rel="stylesheet" href="assets/app.css">
+</head>
+<body>
+<header class="top">
+  <a class="wordmark" href="index.html#/search">Metabolic Atlas<span class="dot">.</span></a>
+  <nav aria-label="Main">
+    <a class="navlink" href="index.html#/search">Search map</a>
+    <a class="navlink" href="index.html#/gems">GEM browser</a>
+    <a class="navlink" href="methods.html" aria-current="page">Methods &amp; limitations</a>
+  </nav>
+  <span class="release">35 GEMs · 4 species · data release 2026-09-17</span>
+</header>
+
+<main class="prose">
+  <h1>Methods and limitations</h1>
+
+  <h2>Dataset</h2>
+  <p>The atlas serves 35 genome-scale metabolic models (GEMs) of 4 bacterial species.
+  Each model carries reactions with bounds and gene-protein-reaction rules, metabolites
+  with formula and charge, gene nucleotide sequences, growth rate anchors per medium
+  axis, and a biomass reaction.</p>
+  <table>
+    <thead><tr><th scope="col">Species</th><th scope="col">GEMs</th></tr></thead>
+    <tbody>
+      <tr><td>Parageobacillus thermoglucosidasius</td><td>8</td></tr>
+      <tr><td>Pseudomonas putida</td><td>7</td></tr>
+      <tr><td>Cupriavidus necator</td><td>14</td></tr>
+      <tr><td>Eubacterium limosum</td><td>6</td></tr>
+      <tr><th scope="row">Total</th><td>35</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Union map</h2>
+  <p>The 3D map shows the union of all 35 models: 3,706 compartment-specific metabolites
+  (of which 197 are currency carriers such as ATP, NAD(H), water and protons) and 5,055
+  reactions, partitioned into 14 pathway groups. Metabolites sit at fixed positions on
+  three concentric shells by compartment: extracellular (radius 42), periplasm (26) and
+  cytosol (13). Metabolites of other compartments keep their assigned positions. An edge
+  runs from each substrate to each product of a reaction; edges touching a currency
+  metabolite render dimmed. Node and edge colour encode the pathway group.</p>
+  <table>
+    <thead><tr><th scope="col">Union map statistic</th><th scope="col">Count</th></tr></thead>
+    <tbody>
+      <tr><td>Metabolites</td><td>3,706</td></tr>
+      <tr><td>Currency metabolites</td><td>197 of 3,706</td></tr>
+      <tr><td>Reactions</td><td>5,055</td></tr>
+      <tr><td>Reactions with a reverse direction in at least one GEM</td><td>2,396 of 5,055</td></tr>
+      <tr><td>Reactions carried by no individual GEM in this release</td><td>81 of 5,055</td></tr>
+      <tr><td>Pathway groups</td><td>14</td></tr>
+    </tbody>
+  </table>
+  <p>The 81 reactions carried by no individual GEM appear on the map and in search
+  results with a presence of 0 of 35 strains; a pathway through them cannot be carried
+  end-to-end by any strain.</p>
+
+  <h2>Mode 1: pathway search by enzyme presence</h2>
+  <p>The search enumerates simple paths from the substrate to the product over a directed
+  metabolite graph. Each reaction contributes an edge from every substrate to every
+  product; a reaction with a negative lower bound in at least one GEM also contributes
+  the reverse edge. Currency metabolites are never used as intermediate nodes, so a
+  pathway cannot pass through ATP, NAD(H), water or similar carriers; a currency
+  metabolite may still be the chosen substrate or product. Compartment forms of a
+  metabolite (<span class="mono">_e</span>, <span class="mono">_p</span>,
+  <span class="mono">_c</span>) are distinct nodes joined by transport reactions.</p>
+  <table>
+    <thead><tr><th scope="col">Search parameter</th><th scope="col">Value</th></tr></thead>
+    <tbody>
+      <tr><td>Maximum pathway length</td><td>8 steps</td></tr>
+      <tr><td>Maximum pathways kept</td><td>60</td></tr>
+      <tr><td>Edge expansion budget</td><td>200,000</td></tr>
+    </tbody>
+  </table>
+  <p>Pathways are ranked by length, then by carrier count. Every result states whether
+  the enumeration completed or stopped at a cap; a stopped search can miss pathways, and
+  an empty result from a stopped search is not evidence of absence.</p>
+  <p>Strain presence means the strain's GEM contains at least one reaction for every step
+  of the pathway. Presence does not check that the strain's own bounds permit each step
+  in the required direction, does not check cofactor or redox balance, carbon
+  conservation, thermodynamic feasibility, or flux feasibility; those checks belong to
+  Mode 2. A pathway list is almost never complete: enumeration is bounded by the caps
+  above and by the union network itself, which contains only reactions present in at
+  least one of the 35 models.</p>
+
+  <h2>GEM browser fields</h2>
+  <p>Mass balanced counts reactions whose elemental and charge balance closes with the
+  recorded formulas; balanceable additionally counts reactions that close after proton
+  adjustment. GAM and NGAM are growth-associated and non-growth-associated ATP
+  maintenance, in mmol ATP gDW<sup>-1</sup> and mmol ATP gDW<sup>-1</sup> h<sup>-1</sup>;
+  the NGAM source is recorded per model. Growth rate anchors give the per-axis interval
+  recorded in the model release, in h<sup>-1</sup>; they are model-derived values, not
+  experimental measurements. Bound edits made in the reactions table are held in browser
+  memory for the session; they are written to exports and will feed the phase 2 flux
+  analyses. Reloading the page discards them.</p>
+
+  <h2>Media</h2>
+  <p>Nine predefined media ship with the data release, three axes per species where
+  defined. The media editor and medium-conditioned analyses are part of Mode 2.</p>
+
+  <h2>Release scope</h2>
+  <p>This release covers Mode 1 search, the 3D union map and the GEM browser. Mode 2
+  (flux feasibility by pFBA, FVA and flux sampling), the media editor, knockout, MOMA
+  and growth-coupling analyses, and SBML export are not part of this release; their
+  controls appear only on the roadmap panel.</p>
+
+  <h2>Provenance</h2>
+  <p>Data release 2026-09-17. All computation runs in the browser; no query leaves the
+  page. Cross-reference links resolve to KEGG, BiGG, RHEA, MetaNetX, ChEBI, SEED, HMDB
+  and BioCyc.</p>
+</main>
+
+<footer>
+  <span>Metabolic Atlas · phase 1.</span>
+  <a href="index.html#/search">Back to search</a>
+</footer>
+</body>
+</html>

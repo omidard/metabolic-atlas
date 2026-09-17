@@ -1,0 +1,380 @@
+{
+ "species": [
+  {
+   "key": "Parageobacillus",
+   "name": "Parageobacillus thermoglucosidasius",
+   "accent": "#C0793A",
+   "n": 8
+  },
+  {
+   "key": "Pseudomonas_putida",
+   "name": "Pseudomonas putida",
+   "accent": "#2E6E8E",
+   "n": 7
+  },
+  {
+   "key": "Cupriavidus_necator",
+   "name": "Cupriavidus necator",
+   "accent": "#3E8E6E",
+   "n": 14
+  },
+  {
+   "key": "Eubacterium_limosum",
+   "name": "Eubacterium limosum",
+   "accent": "#7A5EA6",
+   "n": 6
+  }
+ ],
+ "gems": [
+  {
+   "acc": "GCF_000178395.2",
+   "species": "Parageobacillus thermoglucosidasius",
+   "species_key": "Parageobacillus",
+   "accent": "#C0793A",
+   "genes": 942,
+   "reactions": 1554,
+   "metabolites": 1307,
+   "n_seqs": 942
+  },
+  {
+   "acc": "GCF_000258725.1",
+   "species": "Parageobacillus thermoglucosidasius",
+   "species_key": "Parageobacillus",
+   "accent": "#C0793A",
+   "genes": 958,
+   "reactions": 1551,
+   "metabolites": 1300,
+   "n_seqs": 958
+  },
+  {
+   "acc": "GCF_001295365.1",
+   "species": "Parageobacillus thermoglucosidasius",
+   "species_key": "Parageobacillus",
+   "accent": "#C0793A",
+   "genes": 982,
+   "reactions": 1559,
+   "metabolites": 1306,
+   "n_seqs": 982
+  },
+  {
+   "acc": "GCF_001700985.1",
+   "species": "Parageobacillus thermoglucosidasius",
+   "species_key": "Parageobacillus",
+   "accent": "#C0793A",
+   "genes": 993,
+   "reactions": 1561,
+   "metabolites": 1307,
+   "n_seqs": 993
+  },
+  {
+   "acc": "GCF_001902495.1",
+   "species": "Parageobacillus thermoglucosidasius",
+   "species_key": "Parageobacillus",
+   "accent": "#C0793A",
+   "genes": 991,
+   "reactions": 1558,
+   "metabolites": 1307,
+   "n_seqs": 991
+  },
+  {
+   "acc": "GCF_022846475.1",
+   "species": "Parageobacillus thermoglucosidasius",
+   "species_key": "Parageobacillus",
+   "accent": "#C0793A",
+   "genes": 962,
+   "reactions": 1558,
+   "metabolites": 1304,
+   "n_seqs": 962
+  },
+  {
+   "acc": "GCF_024509915.1",
+   "species": "Parageobacillus thermoglucosidasius",
+   "species_key": "Parageobacillus",
+   "accent": "#C0793A",
+   "genes": 990,
+   "reactions": 1542,
+   "metabolites": 1268,
+   "n_seqs": 990
+  },
+  {
+   "acc": "GCF_048834525.1",
+   "species": "Parageobacillus thermoglucosidasius",
+   "species_key": "Parageobacillus",
+   "accent": "#C0793A",
+   "genes": 980,
+   "reactions": 1565,
+   "metabolites": 1323,
+   "n_seqs": 980
+  },
+  {
+   "acc": "GCA_023221695.1",
+   "species": "Pseudomonas putida",
+   "species_key": "Pseudomonas_putida",
+   "accent": "#2E6E8E",
+   "genes": 1698,
+   "reactions": 3330,
+   "metabolites": 2728,
+   "n_seqs": 1690
+  },
+  {
+   "acc": "GCF_000007565.2",
+   "species": "Pseudomonas putida",
+   "species_key": "Pseudomonas_putida",
+   "accent": "#2E6E8E",
+   "genes": 1438,
+   "reactions": 2753,
+   "metabolites": 2813,
+   "n_seqs": 1438
+  },
+  {
+   "acc": "GCF_053209875.1",
+   "species": "Pseudomonas putida",
+   "species_key": "Pseudomonas_putida",
+   "accent": "#2E6E8E",
+   "genes": 1655,
+   "reactions": 3317,
+   "metabolites": 2686,
+   "n_seqs": 1647
+  },
+  {
+   "acc": "GCF_053209915.1",
+   "species": "Pseudomonas putida",
+   "species_key": "Pseudomonas_putida",
+   "accent": "#2E6E8E",
+   "genes": 1661,
+   "reactions": 3322,
+   "metabolites": 2687,
+   "n_seqs": 1653
+  },
+  {
+   "acc": "GCF_053209925.1",
+   "species": "Pseudomonas putida",
+   "species_key": "Pseudomonas_putida",
+   "accent": "#2E6E8E",
+   "genes": 1654,
+   "reactions": 3321,
+   "metabolites": 2686,
+   "n_seqs": 1646
+  },
+  {
+   "acc": "GCF_057413415.1",
+   "species": "Pseudomonas putida",
+   "species_key": "Pseudomonas_putida",
+   "accent": "#2E6E8E",
+   "genes": 1646,
+   "reactions": 3326,
+   "metabolites": 2688,
+   "n_seqs": 1639
+  },
+  {
+   "acc": "GCF_057413505.1",
+   "species": "Pseudomonas putida",
+   "species_key": "Pseudomonas_putida",
+   "accent": "#2E6E8E",
+   "genes": 1648,
+   "reactions": 3322,
+   "metabolites": 2688,
+   "n_seqs": 1641
+  },
+  {
+   "acc": "GCF_000009285.1",
+   "species": "Cupriavidus necator",
+   "species_key": "Cupriavidus_necator",
+   "accent": "#3E8E6E",
+   "genes": 1349,
+   "reactions": 2314,
+   "metabolites": 2009,
+   "n_seqs": 1349
+  },
+  {
+   "acc": "GCF_004798725.1",
+   "species": "Cupriavidus necator",
+   "species_key": "Cupriavidus_necator",
+   "accent": "#3E8E6E",
+   "genes": 1383,
+   "reactions": 2315,
+   "metabolites": 2012,
+   "n_seqs": 1339
+  },
+  {
+   "acc": "GCF_016127575.1",
+   "species": "Cupriavidus necator",
+   "species_key": "Cupriavidus_necator",
+   "accent": "#3E8E6E",
+   "genes": 1389,
+   "reactions": 2315,
+   "metabolites": 2012,
+   "n_seqs": 1345
+  },
+  {
+   "acc": "GCF_030413215.1",
+   "species": "Cupriavidus necator",
+   "species_key": "Cupriavidus_necator",
+   "accent": "#3E8E6E",
+   "genes": 1332,
+   "reactions": 2308,
+   "metabolites": 2012,
+   "n_seqs": 1292
+  },
+  {
+   "acc": "GCF_051903315.1",
+   "species": "Cupriavidus necator",
+   "species_key": "Cupriavidus_necator",
+   "accent": "#3E8E6E",
+   "genes": 1327,
+   "reactions": 2310,
+   "metabolites": 2002,
+   "n_seqs": 1287
+  },
+  {
+   "acc": "GCF_051903335.1",
+   "species": "Cupriavidus necator",
+   "species_key": "Cupriavidus_necator",
+   "accent": "#3E8E6E",
+   "genes": 1382,
+   "reactions": 2315,
+   "metabolites": 2012,
+   "n_seqs": 1338
+  },
+  {
+   "acc": "GCF_051903345.1",
+   "species": "Cupriavidus necator",
+   "species_key": "Cupriavidus_necator",
+   "accent": "#3E8E6E",
+   "genes": 1383,
+   "reactions": 2315,
+   "metabolites": 2012,
+   "n_seqs": 1339
+  },
+  {
+   "acc": "GCF_051903355.1",
+   "species": "Cupriavidus necator",
+   "species_key": "Cupriavidus_necator",
+   "accent": "#3E8E6E",
+   "genes": 1383,
+   "reactions": 2315,
+   "metabolites": 2012,
+   "n_seqs": 1339
+  },
+  {
+   "acc": "GCF_051903365.1",
+   "species": "Cupriavidus necator",
+   "species_key": "Cupriavidus_necator",
+   "accent": "#3E8E6E",
+   "genes": 1382,
+   "reactions": 2315,
+   "metabolites": 2012,
+   "n_seqs": 1338
+  },
+  {
+   "acc": "GCF_051903375.1",
+   "species": "Cupriavidus necator",
+   "species_key": "Cupriavidus_necator",
+   "accent": "#3E8E6E",
+   "genes": 1384,
+   "reactions": 2315,
+   "metabolites": 2012,
+   "n_seqs": 1340
+  },
+  {
+   "acc": "GCF_051903385.1",
+   "species": "Cupriavidus necator",
+   "species_key": "Cupriavidus_necator",
+   "accent": "#3E8E6E",
+   "genes": 1383,
+   "reactions": 2315,
+   "metabolites": 2012,
+   "n_seqs": 1339
+  },
+  {
+   "acc": "GCF_051903395.1",
+   "species": "Cupriavidus necator",
+   "species_key": "Cupriavidus_necator",
+   "accent": "#3E8E6E",
+   "genes": 1330,
+   "reactions": 2308,
+   "metabolites": 2012,
+   "n_seqs": 1290
+  },
+  {
+   "acc": "GCF_051903405.1",
+   "species": "Cupriavidus necator",
+   "species_key": "Cupriavidus_necator",
+   "accent": "#3E8E6E",
+   "genes": 1374,
+   "reactions": 2318,
+   "metabolites": 2008,
+   "n_seqs": 1330
+  },
+  {
+   "acc": "GCF_060793285.1",
+   "species": "Cupriavidus necator",
+   "species_key": "Cupriavidus_necator",
+   "accent": "#3E8E6E",
+   "genes": 1215,
+   "reactions": 2240,
+   "metabolites": 2036,
+   "n_seqs": 1215
+  },
+  {
+   "acc": "GCF_000807675.2",
+   "species": "Eubacterium limosum",
+   "species_key": "Eubacterium_limosum",
+   "accent": "#7A5EA6",
+   "genes": 862,
+   "reactions": 1700,
+   "metabolites": 1547,
+   "n_seqs": 859
+  },
+  {
+   "acc": "GCF_003182515.1",
+   "species": "Eubacterium limosum",
+   "species_key": "Eubacterium_limosum",
+   "accent": "#7A5EA6",
+   "genes": 857,
+   "reactions": 1693,
+   "metabolites": 1544,
+   "n_seqs": 857
+  },
+  {
+   "acc": "GCF_023520755.1",
+   "species": "Eubacterium limosum",
+   "species_key": "Eubacterium_limosum",
+   "accent": "#7A5EA6",
+   "genes": 859,
+   "reactions": 1697,
+   "metabolites": 1544,
+   "n_seqs": 859
+  },
+  {
+   "acc": "GCF_027680525.1",
+   "species": "Eubacterium limosum",
+   "species_key": "Eubacterium_limosum",
+   "accent": "#7A5EA6",
+   "genes": 844,
+   "reactions": 1694,
+   "metabolites": 1556,
+   "n_seqs": 844
+  },
+  {
+   "acc": "GCF_043289835.1",
+   "species": "Eubacterium limosum",
+   "species_key": "Eubacterium_limosum",
+   "accent": "#7A5EA6",
+   "genes": 838,
+   "reactions": 1684,
+   "metabolites": 1535,
+   "n_seqs": 838
+  },
+  {
+   "acc": "GCF_900683775.1",
+   "species": "Eubacterium limosum",
+   "species_key": "Eubacterium_limosum",
+   "accent": "#7A5EA6",
+   "genes": 823,
+   "reactions": 1663,
+   "metabolites": 1519,
+   "n_seqs": 823
+  }
+ ]
+}
