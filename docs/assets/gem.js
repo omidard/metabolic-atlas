@@ -23,7 +23,7 @@ export function initGemView(container, indexData, opts = {}) {
     <p class="sub">35 genome-scale models across 4 species. Choose a model to view its
     statistics, growth anchors, biomass formulation, reactions, metabolites and gene
     sequences. Lower and upper bounds are editable in the reactions table; edits are held
-    in memory for this session and feed the phase 2 flux analyses.</p>
+    in memory for this session and apply to every Mode-2 flux solve.</p>
     <div class="gem-toolbar">
       <div class="field">
         <label for="gem-select">Model (35 GEMs)</label>

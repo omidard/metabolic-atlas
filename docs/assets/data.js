@@ -39,6 +39,10 @@ export function loadMedia(onStatus) {
   return fetchJSON('data/media.json', 'media definitions', onStatus);
 }
 
+export function loadMetIndex(onStatus) {
+  return fetchJSON('data/met_index.json', 'metabolite name index', onStatus);
+}
+
 // ---- in-memory bound edits: acc -> rxnId -> {lb, ub} (Phase 2 analyses read these)
 const boundEdits = new Map();
 

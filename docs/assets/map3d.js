@@ -191,49 +191,137 @@ export async function createMap(container, graph, groupColors, opts = {}) {
   });
 
   let focusFrom = null, focusTo = null, focusT = 1;
+  let camFrom = null, camTo = null;      // optional camera move paired with the target move
   function focusOn(p) {
     focusFrom = controls.target.clone();
     focusTo = new THREE.Vector3(...p);
+    camFrom = null; camTo = null;
     focusT = reduced ? 1 : 0;
     if (reduced) controls.target.copy(focusTo);
   }
 
-  // ---- pathway highlight overlay
+  // Frame the camera so a bounding sphere (center c, radius r) fills the view.
+  function frameOn(c, r) {
+    const center = new THREE.Vector3(...c);
+    const dist = Math.min(Math.max(r / Math.tan((camera.fov / 2) * Math.PI / 180) * 1.25, controls.minDistance + 6), controls.maxDistance);
+    const dir = camera.position.clone().sub(controls.target).normalize();
+    focusFrom = controls.target.clone();
+    focusTo = center;
+    camFrom = camera.position.clone();
+    camTo = center.clone().add(dir.multiplyScalar(dist));
+    focusT = reduced ? 1 : 0;
+    if (reduced) { controls.target.copy(focusTo); camera.position.copy(camTo); }
+  }
+
+  // ---- pathway highlight overlay: cylinders per step (thickness can encode
+  // |flux|), nodes at each metabolite, an optional animated walk substrate to
+  // product. Everything else dims while a highlight is active.
   let hlGroup = null;
-  function highlightPathway(metSeq, accentHex) {
+  let hlAnim = null;             // {segs, walker, curve, t0, perStep} while walking
+  const upAxis = new THREE.Vector3(0, 1, 0);
+
+  function cylinderBetween(a, b, radius, mat) {
+    const va = new THREE.Vector3(...a), vb = new THREE.Vector3(...b);
+    const dir = vb.clone().sub(va);
+    const len = dir.length();
+    if (len < 1e-6) return null;
+    const geo = new THREE.CylinderGeometry(radius, radius, len, 10, 1, true);
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.position.copy(va).addScaledVector(dir, 0.5);
+    mesh.quaternion.setFromUnitVectors(upAxis, dir.normalize());
+    mesh.renderOrder = 10;
+    return mesh;
+  }
+
+  function highlightPathway(metSeq, accentHex, opts = {}) {
     clearHighlight();
-    hlGroup = new THREE.Group();
     const pts = metSeq.map(mid => graph.metabolites[mid]).filter(Boolean);
     if (pts.length < 2) return;
-    const pos = [];
-    for (let i = 0; i < pts.length - 1; i++) pos.push(...pts[i].p, ...pts[i + 1].p);
-    const lg = new THREE.BufferGeometry();
-    lg.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pos), 3));
-    const line = new THREE.LineSegments(lg, new THREE.LineBasicMaterial({ color: accentHex, transparent: true, opacity: 0.95, depthTest: false }));
-    line.renderOrder = 10;
+    hlGroup = new THREE.Group();
+
+    const weights = opts.weights || null;   // one |flux| per step, or null
+    let wMax = 0;
+    if (weights) for (const w of weights) if (w != null && w > wMax) wMax = w;
+
+    const mat = new THREE.MeshBasicMaterial({ color: accentHex, transparent: true, opacity: 0.95, depthTest: false });
+    const segs = [];
+    for (let i = 0; i < pts.length - 1; i++) {
+      let radius = 0.24;
+      if (weights && wMax > 1e-9) {
+        const w = weights[i] == null ? 0 : Math.abs(weights[i]);
+        radius = 0.12 + 0.55 * (w / wMax);
+      }
+      const seg = cylinderBetween(pts[i].p, pts[i + 1].p, radius, mat);
+      if (seg) { hlGroup.add(seg); segs.push(seg); }
+    }
     const ng = new THREE.BufferGeometry();
     ng.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pts.flatMap(m => m.p)), 3));
-    const nodes = new THREE.Points(ng, new THREE.PointsMaterial({ color: accentHex, size: 2.2, map: spriteTex, alphaTest: 0.4, transparent: true, depthTest: false, sizeAttenuation: true }));
+    const nodes = new THREE.Points(ng, new THREE.PointsMaterial({ color: accentHex, size: 2.4, map: spriteTex, alphaTest: 0.4, transparent: true, depthTest: false, sizeAttenuation: true }));
     nodes.renderOrder = 11;
-    hlGroup.add(line, nodes);
+    hlGroup.add(nodes);
     scene.add(hlGroup);
-    mainEdges.material.opacity = 0.05;
-    mainPoints.material.opacity = 0.35;
+
+    mainEdges.material.opacity = 0.04;
+    mainPoints.material.opacity = 0.25;
     curEdges.material.opacity = 0.02;
-    focusOn(pts[Math.floor(pts.length / 2)].p);
+    curPoints.material.opacity = 0.15;
+
+    // frame the camera on the pathway's bounding sphere
+    const box = new THREE.Box3();
+    for (const m of pts) box.expandByPoint(new THREE.Vector3(...m.p));
+    const sphere = box.getBoundingSphere(new THREE.Sphere());
+    frameOn(sphere.center.toArray(), Math.max(sphere.radius, 8));
+
+    // animated walk substrate to product: segments appear in order with a
+    // walker sphere; reduced motion shows the full highlight immediately.
+    if (opts.animate && !reduced && segs.length) {
+      segs.forEach(s => { s.visible = false; });
+      const walker = new THREE.Mesh(
+        new THREE.SphereGeometry(0.9, 12, 10),
+        new THREE.MeshBasicMaterial({ color: accentHex, depthTest: false }));
+      walker.renderOrder = 12;
+      walker.position.set(...pts[0].p);
+      hlGroup.add(walker);
+      hlAnim = { segs, walker, pts, t0: performance.now(), perStep: 260 };
+    }
   }
+
   function clearHighlight() {
-    if (hlGroup) { scene.remove(hlGroup); hlGroup = null; }
+    hlAnim = null;
+    if (hlGroup) {
+      hlGroup.traverse(o => { if (o.geometry) o.geometry.dispose(); });
+      scene.remove(hlGroup);
+      hlGroup = null;
+    }
     mainEdges.material.opacity = 0.14;
     mainPoints.material.opacity = 0.95;
     curEdges.material.opacity = 0.05;
+    curPoints.material.opacity = 0.4;
   }
 
   // ---- render loop
   renderer.setAnimationLoop(() => {
     if (focusT < 1 && focusTo) {
       focusT = Math.min(1, focusT + 0.08);
-      controls.target.lerpVectors(focusFrom, focusTo, 1 - Math.pow(1 - focusT, 3));
+      const k = 1 - Math.pow(1 - focusT, 3);
+      controls.target.lerpVectors(focusFrom, focusTo, k);
+      if (camFrom && camTo) camera.position.lerpVectors(camFrom, camTo, k);
+    }
+    if (hlAnim) {
+      const { segs, walker, pts, t0, perStep } = hlAnim;
+      const prog = (performance.now() - t0) / perStep;      // in steps
+      const step = Math.floor(prog);
+      for (let i = 0; i < segs.length; i++) segs[i].visible = i < step;
+      if (step >= segs.length) {
+        segs.forEach(s => { s.visible = true; });
+        hlGroup.remove(walker);
+        walker.geometry.dispose();
+        hlAnim = null;
+      } else {
+        const f = prog - step;
+        const a = new THREE.Vector3(...pts[step].p), b = new THREE.Vector3(...pts[step + 1].p);
+        walker.position.lerpVectors(a, b, f);
+      }
     }
     controls.update();
     if (pendingHover && hoverCb) {
@@ -260,7 +348,7 @@ export async function createMap(container, graph, groupColors, opts = {}) {
     resetView() {
       camera.position.set(62, 40, 78);
       controls.target.set(0, 0, 0);
-      focusTo = null;
+      focusTo = null; camFrom = null; camTo = null;
     },
     dispose() {
       renderer.setAnimationLoop(null);

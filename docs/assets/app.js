@@ -2,7 +2,7 @@
 // substrate/product pickers, species filter, Mode-1 search, the 3D map and the
 // GEM browser. Absent values render as absent; every count carries its denominator.
 
-import { loadIndex, loadGraph, loadGraphMeta, fmt, downloadBlob, csvEscape } from './data.js';
+import { loadIndex, loadGraph, loadGraphMeta, loadMetIndex, fmt, downloadBlob, csvEscape } from './data.js';
 import { searchPathways, carriersBySpecies, DEFAULTS } from './search.js';
 import { initGemView, openReactionInBrowser, setIndexData } from './gem.js';
 
@@ -47,10 +47,27 @@ function hslToHex(h, s, l) {
 
 // ---- app state
 let INDEX = null, GRAPH = null, META = null, GROUP_COLORS = null;
-let metList = [];                        // [{mid, name, comp, group, cur}]
+let MET_INDEX = null;                    // {mid: {name, kegg, chebi}} or null when unavailable
+let metList = [];                        // [{mid, name, kegg, comp, group, cur}]
 let map = null;                          // map3d api or null
 let selectedSpecies = new Set();
 let lastResults = null;
+let MODE2 = null;                        // lazily imported mode2 module api or null
+let highlightedIdx = null;               // pathway index currently on the map
+
+// Display name for a metabolite id: standard name when the index carries one,
+// otherwise the id itself.
+function metName(mid) {
+  const e = MET_INDEX && MET_INDEX[mid];
+  if (e && e.name && e.name !== mid) return e.name;
+  const g = GRAPH && GRAPH.metabolites[mid];
+  if (g && g.n && g.n !== mid) return g.n;
+  return '';
+}
+function metLabelHTML(mid) {
+  const nm = metName(mid);
+  return nm ? `${esc(nm)} <span class="mono">${esc(mid)}</span>` : `<span class="mono">${esc(mid)}</span>`;
+}
 
 // ================= boot =================
 (async function boot() {
@@ -75,10 +92,18 @@ let lastResults = null;
     return;
   }
 
+  try {
+    MET_INDEX = await loadMetIndex();
+  } catch (e) {
+    MET_INDEX = null;   // pickers fall back to id-only matching and say so
+  }
+
   GROUP_COLORS = groupColorMap(GRAPH.groups);
-  metList = Object.entries(GRAPH.metabolites).map(([mid, m]) => ({
-    mid, name: m.n !== mid ? m.n : '', comp: m.c, group: m.g, cur: !!m.cur,
-  }));
+  metList = Object.entries(GRAPH.metabolites).map(([mid, m]) => {
+    const x = MET_INDEX && MET_INDEX[mid];
+    const name = (x && x.name && x.name !== mid) ? x.name : (m.n !== mid ? m.n : '');
+    return { mid, name, kegg: (x && x.kegg) || '', comp: m.c, group: m.g, cur: !!m.cur };
+  });
   const nCur = metList.filter(m => m.cur).length;
   $('#dataset-line').textContent =
     `${INDEX.gems.length} GEMs · ${INDEX.species.length} species · union map: ` +
@@ -94,6 +119,7 @@ let lastResults = null;
   $('#run-search').disabled = false;
   buildExamples();
   $('#search-form').addEventListener('submit', (e) => { e.preventDefault(); runSearch(); });
+  wireModeToggle();
 
   initMap();
 })();
@@ -144,27 +170,43 @@ function setupPicker(kind) {
   const close = () => { listbox.hidden = true; input.setAttribute('aria-expanded', 'false'); active = -1; };
   const open = () => { listbox.hidden = false; input.setAttribute('aria-expanded', 'true'); };
 
+  // Match on id, standard name and KEGG id. Rank: exact match (0), prefix (1),
+  // substring (2); ties break on shorter label.
+  function scoreMatch(m, query) {
+    const idL = m.mid.toLowerCase(), nmL = m.name.toLowerCase(), kgL = m.kegg.toLowerCase();
+    if (idL === query || nmL === query || kgL === query) return 0;
+    if (idL.startsWith(query) || nmL.startsWith(query) || kgL.startsWith(query)) return 1;
+    if (idL.includes(query) || nmL.includes(query) || kgL.includes(query)) return 2;
+    return -1;
+  }
+
   function renderOptions(q) {
     const query = q.trim().toLowerCase();
     if (!query) { close(); return; }
-    const starts = [], contains = [];
+    const scored = [];
     for (const m of metList) {
-      const idL = m.mid.toLowerCase(), nmL = m.name.toLowerCase();
-      if (idL.startsWith(query) || nmL.startsWith(query)) starts.push(m);
-      else if (idL.includes(query) || nmL.includes(query)) contains.push(m);
+      const s = scoreMatch(m, query);
+      if (s >= 0) scored.push([s, m]);
     }
-    const all = starts.concat(contains);
+    scored.sort((a, b) => a[0] - b[0]
+      || (a[1].name || a[1].mid).length - (b[1].name || b[1].mid).length
+      || a[1].mid.localeCompare(b[1].mid));
+    const all = scored.map(x => x[1]);
     options = all.slice(0, 50);
     if (!all.length) {
-      listbox.innerHTML = `<li class="mcap" role="presentation">No metabolite matches "${esc(q)}" among ${fmt.format(metList.length)} ids in the union map.</li>`;
+      const scope = MET_INDEX
+        ? `${fmt.format(metList.length)} metabolites (id, name or KEGG id)`
+        : `${fmt.format(metList.length)} metabolite ids (the name index did not load; reload to retry name and KEGG matching)`;
+      listbox.innerHTML = `<li class="mcap" role="presentation">No metabolite matches "${esc(q)}" among ${scope}.</li>`;
       open(); return;
     }
     const cap = all.length > options.length
       ? `<li class="mcap" role="presentation">Showing ${options.length} of ${fmt.format(all.length)} matches; keep typing to narrow.</li>` : '';
     listbox.innerHTML = options.map((m, i) => `
       <li id="${kind}-opt-${i}" role="option" aria-selected="false" data-mid="${esc(m.mid)}">
-        <span class="mid">${esc(m.mid)}</span>
-        ${m.name ? `<span class="mname">${esc(m.name)}</span>` : ''}
+        <span class="mname-primary">${esc(m.name || m.mid)}</span>
+        ${m.name ? `<span class="mid">${esc(m.mid)}</span>` : ''}
+        ${m.kegg ? `<span class="mkegg">${esc(m.kegg)}</span>` : ''}
         ${m.cur ? '<span class="mname">currency</span>' : ''}
         <span class="comp-badge">${esc(m.comp)}</span>
       </li>`).join('') + cap;
@@ -176,8 +218,9 @@ function setupPicker(kind) {
 
   function choose(mid) {
     pickerState[kind].mid = mid;
-    input.value = mid;
+    input.value = metName(mid) ? `${metName(mid)} (${mid})` : mid;
     close();
+    if (MODE2) MODE2.onEndpointsChange(pickerState.sub.mid, pickerState.prod.mid);
   }
 
   function setActive(i) {
@@ -202,6 +245,12 @@ function setupPicker(kind) {
   });
 }
 
+function setPickerValue(kind, mid) {
+  pickerState[kind].mid = mid;
+  $(`#${kind}-input`).value = metName(mid) ? `${metName(mid)} (${mid})` : mid;
+  if (MODE2) MODE2.onEndpointsChange(pickerState.sub.mid, pickerState.prod.mid);
+}
+
 function buildExamples() {
   const examples = [
     ['glc__D_e', 'etoh_e', 'glucose to ethanol'],
@@ -216,26 +265,39 @@ function buildExamples() {
     btn.className = 'btn small';
     btn.textContent = `Try: ${label}`;
     btn.addEventListener('click', () => {
-      pickerState.sub.mid = a; $('#sub-input').value = a;
-      pickerState.prod.mid = b; $('#prod-input').value = b;
+      setPickerValue('sub', a);
+      setPickerValue('prod', b);
       runSearch();
     });
     row.appendChild(btn);
   }
 }
 
-// ================= Mode-1 search =================
+// ================= search (Mode 1 enumeration; Mode 2 adds feasibility) =================
+function currentMode() {
+  const r = document.querySelector('input[name="mode"]:checked');
+  return r ? r.value : '1';
+}
+
 function runSearch() {
   const sub = pickerState.sub.mid, prod = pickerState.prod.mid;
   const summary = $('#results-summary');
   if (!GRAPH || !META) return;
   if (!sub || !prod) {
-    summary.innerHTML = `<span class="status">Pick both a substrate and a product from the list (type to search ${fmt.format(metList.length)} metabolite ids).</span>`;
+    summary.innerHTML = `<span class="status">Pick both a substrate and a product from the list (type a name, BiGG id or KEGG id to search ${fmt.format(metList.length)} metabolites).</span>`;
     return;
   }
   if (sub === prod) {
     summary.innerHTML = '<span class="status">Substrate and product are the same metabolite; nothing to search.</span>';
     return;
+  }
+  const mode = currentMode();
+  if (mode === '2' && MODE2) {
+    const why = MODE2.notReadyReason();
+    if (why) {
+      summary.innerHTML = `<span class="status">${esc(why)}</span>`;
+      return;
+    }
   }
   summary.textContent = 'Searching…';
   setTimeout(() => {
@@ -244,6 +306,9 @@ function runSearch() {
     const ms = Math.round(performance.now() - t0);
     lastResults = { res, sub, prod, species: [...selectedSpecies] };
     renderResults(res, sub, prod, ms);
+    if (res.pathways.length && map) showPathwayOnMap(res.pathways[0], 0, { animate: true });
+    else clearMapHighlight();
+    if (mode === '2' && MODE2) MODE2.runFeasibility(lastResults);
   }, 30);
 }
 
@@ -269,7 +334,7 @@ function renderResults(res, sub, prod, ms) {
 
   if (!pathways.length) {
     summary.innerHTML = `<div class="result-summary"><strong>No pathway found</strong> from
-      <span class="mono">${esc(sub)}</span> to <span class="mono">${esc(prod)}</span>
+      ${metLabelHTML(sub)} to ${metLabelHTML(prod)}
       within ${termination.maxDepth} steps for the selected species${spNote} (${ms} ms).</div>`;
     body.innerHTML = `<div class="card empty-state">
       ${terminationLine(termination, 0)}
@@ -283,7 +348,7 @@ function renderResults(res, sub, prod, ms) {
   const best = pathways[0];
   summary.innerHTML = `<div class="result-summary">
     <strong>${fmt.format(pathways.length)} pathway${pathways.length > 1 ? 's' : ''}</strong> from
-    <span class="mono">${esc(sub)}</span> to <span class="mono">${esc(prod)}</span> ·
+    ${metLabelHTML(sub)} to ${metLabelHTML(prod)} ·
     shortest ${best.len} step${best.len > 1 ? 's' : ''} ·
     best carried end-to-end by ${best.carriers} of ${nGems} GEMs${spNote} · ${ms} ms</div>`;
 
@@ -313,16 +378,27 @@ function pathwayCard(pw, idx) {
   const nGems = META.accs.length;
   const d = document.createElement('details');
   d.className = 'pcard';
-  const chain = pw.mets.join(' → ');
+  d.dataset.pwIdx = idx;
+  const chain = pw.mets.map(m => metName(m) || m).join(' → ');
   d.innerHTML = `
     <summary>
       <span class="rank">#${idx + 1}</span>
       <span class="plen">${pw.len} step${pw.len > 1 ? 's' : ''}</span>
       <span class="carriers">${pw.carriers} of ${nGems} GEMs carry every step</span>
-      <span class="chain">${esc(chain)}</span>
+      <span class="feas-slot"></span>
+      <span class="chain" title="${esc(pw.mets.join(' → '))}">${esc(chain)}</span>
     </summary>
     <div class="pcard-body"></div>`;
   const bodyEl = d.querySelector('.pcard-body');
+
+  // Live map highlight: hover or keyboard focus previews, opening the card
+  // animates the walk. The map is optional; without it these are no-ops.
+  const preview = () => { if (map && highlightedIdx !== idx) showPathwayOnMap(pw, idx, { animate: false }); };
+  if (window.matchMedia('(hover: hover) and (pointer: fine)').matches) {
+    d.querySelector('summary').addEventListener('mouseenter', preview);
+  }
+  d.querySelector('summary').addEventListener('focus', preview);
+  d.addEventListener('toggle', () => { if (d.open && map) showPathwayOnMap(pw, idx, { animate: true }); });
 
   const stepsEl = document.createElement('div');
   pw.steps.forEach((st, i) => {
@@ -330,13 +406,16 @@ function pathwayCard(pw, idx) {
     const shown = st.rxns.slice(0, CAP);
     const stepDiv = document.createElement('div');
     stepDiv.className = 'step';
-    stepDiv.innerHTML = `<div class="step-mets">Step ${i + 1}: ${esc(st.from)} → ${esc(st.to)}</div>` +
+    stepDiv.dataset.step = i;
+    const fromNm = metName(st.from), toNm = metName(st.to);
+    stepDiv.innerHTML = `<div class="step-mets">Step ${i + 1}: ${fromNm ? esc(fromNm) + ' ' : ''}<span class="mono">${esc(st.from)}</span> → ${toNm ? esc(toNm) + ' ' : ''}<span class="mono">${esc(st.to)}</span></div>` +
       shown.map(r => `
-        <div class="rxn-alt">
+        <div class="rxn-alt" data-rxn="${esc(r.id)}">
           <button class="rid btn small" type="button" data-rid="${esc(r.id)}" title="Open in GEM browser">${esc(r.id)}</button>
           ${r.dir === 'rev' ? '<span class="ec">(reverse of written direction)</span>' : ''}
           ${r.ec.length ? `<span class="ec">EC ${esc(r.ec.join(', '))}</span>` : ''}
           <span class="rn">${esc(r.name || '')}</span>
+          <span class="flux-slot"></span>
         </div>`).join('') +
       (st.rxns.length > CAP ? `<p class="termination">Showing ${CAP} of ${st.rxns.length} alternative reactions for this step.</p>` : '');
     stepsEl.appendChild(stepDiv);
@@ -360,9 +439,14 @@ function pathwayCard(pw, idx) {
   }
   const note = document.createElement('p');
   note.className = 'termination';
-  note.textContent = 'A filled cell means the strain’s GEM contains at least one reaction for every step. Per-strain direction feasibility is a Mode 2 (phase 2) check.';
+  note.textContent = 'A filled cell means the strain’s GEM contains at least one reaction for every step. Whether the strain’s own bounds and a medium permit flux through every step is a Mode 2 check.';
   matrix.appendChild(note);
   bodyEl.appendChild(matrix);
+
+  // Mode-2 feasibility detail slot (filled by mode2.js when a run covers this card)
+  const m2slot = document.createElement('div');
+  m2slot.className = 'mode2-slot';
+  bodyEl.appendChild(m2slot);
 
   // actions
   const actions = document.createElement('div');
@@ -373,9 +457,7 @@ function pathwayCard(pw, idx) {
   btnMap.disabled = !map;
   btnMap.addEventListener('click', () => {
     if (!map) return;
-    const ink = getComputedStyle(document.documentElement).getPropertyValue('--accent-ink').trim() || '#245C77';
-    map.highlightPathway(pw.mets, ink);
-    $('#clear-highlight').hidden = false;
+    showPathwayOnMap(pw, idx, { animate: true });
     $('#map-pane').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   });
   const btnCsv = document.createElement('button');
@@ -402,7 +484,7 @@ function exportPathway(pw, idx, kind) {
     substrate: lastResults.sub, product: lastResults.prod,
     species_filter: lastResults.species, rank: idx + 1, steps: pw.len,
     carriers: `${pw.carriers} of ${META.accs.length} GEMs`,
-    note: 'Mode 1 enzyme presence; per-strain direction feasibility not checked (phase 2).',
+    note: 'Mode 1 enzyme presence; flux feasibility under a medium is a Mode 2 check and is not included in this export.',
   };
   if (kind === 'json') {
     downloadBlob(JSON.stringify({
@@ -424,6 +506,64 @@ function exportPathway(pw, idx, kind) {
   }
 }
 
+// ================= map highlight orchestration =================
+function accentInk() {
+  return getComputedStyle(document.documentElement).getPropertyValue('--accent-ink').trim() || '#245C77';
+}
+
+// weights: optional array (one per step) of |flux| magnitudes; the map scales
+// edge thickness by them. animate steps the walk substrate to product.
+function showPathwayOnMap(pw, idx, { animate = false, weights = null } = {}) {
+  if (!map) return;
+  highlightedIdx = idx;
+  map.highlightPathway(pw.mets, accentInk(), { animate, weights });
+  $('#clear-highlight').hidden = false;
+}
+
+function clearMapHighlight() {
+  if (map) map.clearHighlight();
+  highlightedIdx = null;
+  $('#clear-highlight').hidden = true;
+}
+
+// ================= Mode 2 module (lazy) =================
+async function activateMode2() {
+  if (MODE2) { MODE2.setActive(true); return; }
+  const panel = $('#mode2-panel');
+  panel.hidden = false;
+  panel.innerHTML = '<div class="card"><span class="status">Loading the flux engine (GLPK-WASM, about 250 kB)…</span></div>';
+  try {
+    const mod = await import('./mode2.js');
+    MODE2 = await mod.initMode2(panel, {
+      index: INDEX, graphMeta: META,
+      metName, metLabelHTML, setAccent,
+      getEndpoints: () => ({ sub: pickerState.sub.mid, prod: pickerState.prod.mid }),
+      findCard: (i) => document.querySelector(`.pcard[data-pw-idx="${i}"]`),
+      showFluxOnMap: (pw, i, weights) => showPathwayOnMap(pw, i, { animate: false, weights }),
+      resultsSummary: () => $('#results-summary'),
+      speciesTokens: SPECIES_TOKENS,
+    });
+    MODE2.onEndpointsChange(pickerState.sub.mid, pickerState.prod.mid);
+    MODE2.setActive(true);
+  } catch (e) {
+    panel.innerHTML = `<div class="card"><p class="status error">Mode 2 is unavailable: the flux engine failed to load (${esc(e.message)}).
+      Reload the page to retry. Mode 1 search keeps working.</p></div>`;
+    const m1 = document.querySelector('input[name="mode"][value="1"]');
+    if (m1) m1.checked = true;
+  }
+}
+
+function wireModeToggle() {
+  document.querySelectorAll('input[name="mode"]').forEach(r => {
+    r.addEventListener('change', () => {
+      const m2 = currentMode() === '2';
+      $('#mode2-panel').hidden = !m2;
+      if (m2) activateMode2();
+      else if (MODE2) MODE2.setActive(false);
+    });
+  });
+}
+
 // ================= 3D map =================
 async function initMap() {
   const pane = $('#map-pane');
@@ -434,8 +574,9 @@ async function initMap() {
     map = await createMap(pane, GRAPH, GROUP_COLORS, {
       onHover(hit) {
         if (!hit) { tip.hidden = true; return; }
+        const nm = metName(hit.mid);
         tip.innerHTML = `<span class="tid">${esc(hit.mid)}</span><br>
-          ${hit.met.n !== hit.mid ? esc(hit.met.n) + '<br>' : ''}
+          ${nm ? esc(nm) + '<br>' : ''}
           ${esc(hit.met.g)} · compartment ${esc(hit.met.c)}${hit.met.cur ? ' · currency' : ''}`;
         tip.style.left = Math.min(hit.x + 12, pane.clientWidth - 240) + 'px';
         tip.style.top = (hit.y + 12) + 'px';
@@ -448,7 +589,7 @@ async function initMap() {
     $('#toggle-currency').addEventListener('change', (e) => map.setCurrencyVisible(e.target.checked));
     $('#toggle-labels').addEventListener('change', (e) => map.setLabelsVisible(e.target.checked));
     $('#reset-view').addEventListener('click', () => map.resetView());
-    $('#clear-highlight').addEventListener('click', () => { map.clearHighlight(); $('#clear-highlight').hidden = true; });
+    $('#clear-highlight').addEventListener('click', clearMapHighlight);
   } catch (e) {
     map = null;
     const reason = e.message === 'webgl-unavailable'

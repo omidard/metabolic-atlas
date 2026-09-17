@@ -32,15 +32,15 @@
     <h1>Which species and strains convert a substrate to a product, and by what pathway?</h1>
     <p class="sub">Pathway search over the union reaction network of 35 genome-scale models:
       Parageobacillus thermoglucosidasius (8), Pseudomonas putida (7), Cupriavidus necator (14)
-      and Eubacterium limosum (6). Mode 1 ranks enzyme-presence pathways; Mode 2 (flux
-      feasibility) arrives in phase 2.</p>
+      and Eubacterium limosum (6). Mode 1 ranks enzyme-presence pathways; Mode 2 tests flux
+      feasibility for a chosen GEM on an editable medium, solved in the browser.</p>
 
     <form class="searchbar" id="search-form" role="search" aria-label="Substrate to product search">
       <div class="field picker" id="picker-sub">
         <label for="sub-input">Substrate</label>
         <input type="text" id="sub-input" role="combobox" aria-expanded="false"
                aria-controls="sub-listbox" aria-autocomplete="list" autocomplete="off"
-               placeholder="Type a metabolite id or name…" disabled>
+               placeholder="Name, BiGG id or KEGG id…" disabled>
         <ul class="listbox" id="sub-listbox" role="listbox" hidden></ul>
       </div>
       <span class="swap-arrow" aria-hidden="true">→</span>
@@ -48,7 +48,7 @@
         <label for="prod-input">Product</label>
         <input type="text" id="prod-input" role="combobox" aria-expanded="false"
                aria-controls="prod-listbox" aria-autocomplete="list" autocomplete="off"
-               placeholder="Type a metabolite id or name…" disabled>
+               placeholder="Name, BiGG id or KEGG id…" disabled>
         <ul class="listbox" id="prod-listbox" role="listbox" hidden></ul>
       </div>
       <div class="field">
@@ -59,11 +59,13 @@
         <legend style="font-size:var(--t-xs);font-weight:600;color:var(--ink-2);padding:0">Mode</legend>
         <div class="modes">
           <label class="mode"><input type="radio" name="mode" value="1" checked> Mode 1 · enzyme presence</label>
-          <label class="mode disabled"><input type="radio" name="mode" value="2" disabled> Mode 2 · flux feasibility · phase 2, not built</label>
+          <label class="mode"><input type="radio" name="mode" value="2"> Mode 2 · flux feasibility (GEM + medium)</label>
         </div>
       </fieldset>
       <button class="btn primary run" id="run-search" type="submit" disabled>Search pathways</button>
     </form>
+
+    <div id="mode2-panel" hidden></div>
 
     <div class="split">
       <div class="map-pane" id="map-pane">
@@ -84,8 +86,9 @@
           <div class="card empty-state" id="results-empty">
             <strong id="dataset-line">Loading dataset…</strong>
             <ul>
-              <li>Pick a substrate and a product; ids follow BiGG naming with a compartment suffix (_e extracellular, _p periplasm, _c cytosol).</li>
+              <li>Pick a substrate and a product by standard name ("acetate"), BiGG id (ac_e) or KEGG id (C00033). Ids carry a compartment suffix (_e extracellular, _p periplasm, _c cytosol).</li>
               <li>Mode 1 ranks pathways by length and reports which of the 35 GEMs carry every step.</li>
+              <li>Mode 2 tests each pathway's flux feasibility for one GEM on an editable medium; the substrate replaces the medium's carbon source.</li>
               <li>Currency metabolites (ATP, NAD, water…) are never used as pathway intermediates.</li>
             </ul>
             <div class="chiprow" style="margin-top:var(--s3)" id="example-row"></div>
@@ -95,11 +98,11 @@
     </div>
 
     <div class="phase2" style="margin-top:var(--s5)">
-      <h3>Phase 2 roadmap (not built yet)</h3>
+      <h3>Roadmap (not built yet)</h3>
       <ul>
-        <li>Mode 2 flux feasibility: pFBA / FVA / flux sampling per GEM and medium (GLPK-WASM, vendored).</li>
-        <li>Media editor: clone and edit the 9 predefined media; substrate auto-swap as carbon source.</li>
-        <li>Knockout, MOMA and growth-coupling analyses; full SBML export.</li>
+        <li>Single and double reaction knockout; knockout-to-feasibility search.</li>
+        <li>Shadow prices, growth-coupling, MOMA, over- and under-expression designs.</li>
+        <li>Flux sampling; full SBML export.</li>
       </ul>
       <p>None of these controls appear elsewhere in the interface until they compute real results.</p>
     </div>
@@ -110,7 +113,7 @@
 </main>
 
 <footer>
-  <span>Metabolic Atlas · phase 1 · Mode 1 pathway search, 3D union map, GEM browser.</span>
+  <span>Metabolic Atlas · Mode 1 pathway search, Mode 2 flux feasibility, 3D union map, GEM browser.</span>
   <a href="methods.html">Methods &amp; limitations</a>
   <span id="footer-counts"></span>
 </footer>

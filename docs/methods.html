@@ -87,6 +87,46 @@
   above and by the union network itself, which contains only reactions present in at
   least one of the 35 models.</p>
 
+  <h2>Metabolite search fields</h2>
+  <p>The substrate and product pickers match the metabolite id, the standard name and the
+  KEGG compound id, case-insensitively. Of the 3,706 union-map metabolites, 2,279 carry a
+  standard name and 1,704 a KEGG id; the remainder match by id only. Exact matches rank
+  first, then prefix matches, then substring matches.</p>
+
+  <h2>Mode 2: flux feasibility</h2>
+  <p>Mode 2 evaluates Mode-1 pathways in one chosen GEM on one medium by linear
+  programming (GLPK 5.0 compiled to WebAssembly; every solve runs in the browser).
+  The LP is steady-state mass balance S·v = 0 with the model's reaction bounds. Exchange
+  reactions take their lower bound from the medium; an exchange not listed in the medium
+  is closed (lb = 0). Secretion bounds keep the model's values. Bound edits made in the
+  GEM browser reactions table apply to all Mode-2 solves in the same session.</p>
+  <p>A pathway is feasible on the medium when an LP solution exists that maximises a
+  demand on the product while every pathway step carries at least 10<sup>-4</sup>
+  mmol gDW<sup>-1</sup> h<sup>-1</sup> of net flux in the pathway direction, summed over
+  the step's alternative reactions present in the GEM. Infeasible means no such solution
+  exists under the current bounds; it is a property of the GEM and medium, not of the
+  organism. A pathway with a step whose reactions are all absent from the chosen GEM is
+  not testable and is labelled so. The product target is the exchange reaction of the
+  extracellular form when the GEM has one, otherwise an unbounded demand on the
+  metabolite itself.</p>
+  <p>The reported flux distribution is parsimonious FBA: the product flux is fixed at
+  99.9% of its optimum and total absolute flux is minimised. FVA ranges are the minimum
+  and maximum flux of each pathway reaction with the product held at 99% or more of its
+  optimum. The growth rate reported for the run is a separate LP maximising the biomass
+  reaction on the same medium, in h<sup>-1</sup>. Feasibility is tested automatically for
+  the 10 shortest pathways of a search; the remaining pathways are tested one at a time
+  from their result cards. Flux values are model predictions, not measurements.</p>
+  <table>
+    <thead><tr><th scope="col">Mode 2 parameter</th><th scope="col">Value</th></tr></thead>
+    <tbody>
+      <tr><td>Minimum per-step pathway flux</td><td>10<sup>-4</sup> mmol gDW<sup>-1</sup> h<sup>-1</sup></td></tr>
+      <tr><td>Product flux held for pFBA</td><td>99.9% of optimum</td></tr>
+      <tr><td>Product flux held for FVA</td><td>99% of optimum</td></tr>
+      <tr><td>Pathways tested automatically</td><td>10 shortest per search</td></tr>
+      <tr><td>Solver</td><td>GLPK 5.0 (WebAssembly), simplex with presolve</td></tr>
+    </tbody>
+  </table>
+
   <h2>GEM browser fields</h2>
   <p>Mass balanced counts reactions whose elemental and charge balance closes with the
   recorded formulas; balanceable additionally counts reactions that close after proton
@@ -95,18 +135,28 @@
   the NGAM source is recorded per model. Growth rate anchors give the per-axis interval
   recorded in the model release, in h<sup>-1</sup>; they are model-derived values, not
   experimental measurements. Bound edits made in the reactions table are held in browser
-  memory for the session; they are written to exports and will feed the phase 2 flux
-  analyses. Reloading the page discards them.</p>
+  memory for the session; they are written to exports and apply to every Mode-2 solve.
+  Reloading the page discards them.</p>
 
   <h2>Media</h2>
-  <p>Nine predefined media ship with the data release, three axes per species where
-  defined. The media editor and medium-conditioned analyses are part of Mode 2.</p>
+  <p>Nine predefined media ship with the data release. Each medium lists exchange
+  reactions with uptake lower bounds, a carbon-source exchange and its uptake cap.
+  A medium is editable in the Mode 2 panel: components can be added, removed or
+  re-bounded, and a medium can be cloned to a named custom medium. Edited and custom
+  media are held in browser memory for the session; reloading the page discards them.
+  When Mode 2 runs, the chosen substrate replaces the medium's carbon source: the
+  carbon-source exchange closes and the substrate's exchange opens at the medium's
+  carbon cap. The swap can be switched off per run. A GEM with no exchange reaction for
+  the substrate runs the medium unchanged, and the run says so. Medium components with
+  no matching exchange in the chosen GEM are ignored when solving and counted in the
+  editor.</p>
 
   <h2>Release scope</h2>
-  <p>This release covers Mode 1 search, the 3D union map and the GEM browser. Mode 2
-  (flux feasibility by pFBA, FVA and flux sampling), the media editor, knockout, MOMA
-  and growth-coupling analyses, and SBML export are not part of this release; their
-  controls appear only on the roadmap panel.</p>
+  <p>This release covers Mode 1 search, Mode 2 flux feasibility (pFBA and FVA on an
+  editable medium), the 3D union map and the GEM browser. Reaction knockout,
+  knockout-to-feasibility, shadow prices, growth-coupling, MOMA, over- and
+  under-expression designs, flux sampling and SBML export are not part of this release;
+  their controls appear only on the roadmap panel.</p>
 
   <h2>Provenance</h2>
   <p>Data release 2026-09-17. All computation runs in the browser; no query leaves the
@@ -115,7 +165,7 @@
 </main>
 
 <footer>
-  <span>Metabolic Atlas · phase 1.</span>
+  <span>Metabolic Atlas.</span>
   <a href="index.html#/search">Back to search</a>
 </footer>
 </body>
