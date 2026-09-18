@@ -411,9 +411,11 @@ function renderResults(res, sub, prod, ms) {
     ? ` · species filter: ${lastResults.species.length} of ${INDEX.species.length} species` : '';
 
   if (!pathways.length) {
-    summary.innerHTML = `<div class="result-summary"><strong>No pathway found</strong> from
-      ${metLabelHTML(sub)} to ${metLabelHTML(prod)}
-      within ${termination.maxDepth} steps for the selected species${spNote} (${ms} ms).</div>`;
+    summary.innerHTML = `<div class="result-head">
+      <div class="result-line"><span class="result-count none">No pathway found</span>
+        <span class="result-route">${metLabelHTML(sub)} <span class="route-arrow" aria-hidden="true">→</span> ${metLabelHTML(prod)}</span></div>
+      <div class="result-meta">within ${termination.maxDepth} steps for the selected species${spNote} · search ${ms} ms</div>
+    </div>`;
     body.innerHTML = `<div class="card empty-state">
       ${terminationLine(termination, 0)}
       <p>Currency metabolites are never used as intermediates, so routes that pass only through
@@ -424,11 +426,15 @@ function renderResults(res, sub, prod, ms) {
   }
 
   const best = pathways[0];
-  summary.innerHTML = `<div class="result-summary">
-    <strong>${fmt.format(pathways.length)} pathway${pathways.length > 1 ? 's' : ''}</strong> from
-    ${metLabelHTML(sub)} to ${metLabelHTML(prod)} ·
-    shortest ${best.len} step${best.len > 1 ? 's' : ''} ·
-    best carried end-to-end by ${best.carriers} of ${nGems} GEMs${spNote} · ${ms} ms</div>`;
+  summary.innerHTML = `<div class="result-head">
+    <div class="result-line">
+      <span class="result-count">${fmt.format(pathways.length)}</span>
+      <span class="result-word">pathway${pathways.length > 1 ? 's' : ''}</span>
+      <span class="result-route">${metLabelHTML(sub)} <span class="route-arrow" aria-hidden="true">→</span> ${metLabelHTML(prod)}</span>
+    </div>
+    <div class="result-meta">shortest ${best.len} step${best.len > 1 ? 's' : ''} ·
+      best carried end-to-end by ${best.carriers} of ${nGems} GEMs${spNote} · search ${ms} ms</div>
+  </div>`;
 
   body.innerHTML = '';
   const controls = document.createElement('div');
@@ -506,13 +512,15 @@ function renderListControls() {
     : `${fmt.format(pathways.length)} pathways found; feasibility not tested yet (stage 3, Simulate)`;
 
   host.innerHTML = `
-    <div class="chart-title">Pathway lengths (${fmt.format(pathways.length)} pathways); choose a bar to filter</div>
-    <div class="lenchart" role="group" aria-label="Pathway length filter">${bars}</div>
-    <div class="lenlegend">
-      <span class="ch-lg"><span class="ch-sw" style="background:${SEARCH_COLORS.best}"></span>feasible</span>
-      <span class="ch-lg"><span class="ch-sw" style="background:${SEARCH_COLORS.infeasible}"></span>infeasible / not carried</span>
-      <span class="ch-lg"><span class="ch-sw" style="background:${SEARCH_COLORS.untested}"></span>not tested</span>
-      <span class="lennote">${runNote}</span>
+    <div class="lc-hist">
+      <div class="chart-title">Pathway lengths (${fmt.format(pathways.length)} pathways); choose a bar to filter</div>
+      <div class="lenchart" role="group" aria-label="Pathway length filter">${bars}</div>
+      <div class="lenlegend">
+        <span class="ch-lg"><span class="ch-sw" style="background:${SEARCH_COLORS.best}"></span>feasible</span>
+        <span class="ch-lg"><span class="ch-sw" style="background:${SEARCH_COLORS.infeasible}"></span>infeasible / not carried</span>
+        <span class="ch-lg"><span class="ch-sw" style="background:${SEARCH_COLORS.untested}"></span>not tested</span>
+        <span class="lennote">${runNote}</span>
+      </div>
     </div>
     <div class="listbar">
       <div class="field">
@@ -676,15 +684,16 @@ function pathwayCard(pw, idx) {
   const chainMids = pw.mets;
   const chainHtml = chainMids.map((m, i) => {
     const nm = metName(m) || m;
-    const cls = i === 0 || i === chainMids.length - 1 ? 'chain-end' : 'chain-mid';
+    const cls = i === 0 || i === chainMids.length - 1 ? 'chain-node chain-end' : 'chain-node chain-mid';
     return `<span class="${cls}">${esc(nm)}</span>`;
   }).join('<span class="chain-arrow" aria-hidden="true">→</span>');
   d.innerHTML = `
     <summary>
       <span class="rank">#${idx + 1}</span>
       <span class="plen">${pw.len} step${pw.len > 1 ? 's' : ''}</span>
-      <span class="carriers">${pw.carriers} of ${nGems} GEMs</span>
+      <span class="carriers"><span class="carrier-meter" aria-hidden="true"><span class="carrier-fill" style="width:${Math.round(pw.carriers / nGems * 100)}%"></span></span>${pw.carriers} of ${nGems} GEMs</span>
       <span class="feas-slot"></span>
+      <span class="pcard-marker" aria-hidden="true"></span>
       <span class="chain" title="${esc(pw.mets.join(' → '))}">${chainHtml}</span>
     </summary>
     <div class="pcard-body"></div>`;
@@ -703,6 +712,7 @@ function pathwayCard(pw, idx) {
   });
 
   const stepsEl = document.createElement('div');
+  stepsEl.className = 'pw-steps';
   pw.steps.forEach((st, i) => {
     const altMax = 6;
     const shown = st.rxns.slice(0, altMax);
@@ -1146,12 +1156,14 @@ function buildLegend() {
     (searchLegendData.flux ? `<span class="lg"><span class="swatch" style="background:${SEARCH_COLORS.fluxEdge}"></span>carries flux in the best pathway's pFBA optimum (currency edges not drawn)</span>` : '') +
     '<span class="lg">dim = infeasible or untested</span>'
   ) : '';
+  const nEsch = Object.values(GRAPH.metabolites).filter(m => m.esch).length;
   el.innerHTML =
     searchPart +
     '<span class="lg" style="font-weight:600">Shells:</span>' +
     '<span class="lg">outer = extracellular + exchange</span>' +
     '<span class="lg">middle = periplasm</span>' +
     '<span class="lg">inner = cytosol</span>' +
+    (nEsch ? `<span class="lg">flat central sheet = ${nEsch} of ${fmt.format(GRAPH.n_metabolites)} metabolites (central carbon) at the Escher e_coli_core layout</span>` : '') +
     '<span class="lg" style="font-weight:600;margin-left:6px">Groups:</span>' + GRAPH.groups.map(g =>
       `<span class="lg"><span class="swatch" style="background:${GROUP_COLORS[g] || '#98948C'}"></span>${esc(g)}</span>`).join('') +
     '<span class="lg"><span class="swatch" style="background:' + (GROUP_COLORS.Biomass || '#3A3E45') + ';border-radius:50%"></span>central node = representative biomass (93 common precursors)</span>';

@@ -1,7 +1,10 @@
-// 3D union map: metabolites as points on three compartment shells, reactions as
-// substrate to product edges, coloured by pathway group. three.js is loaded from
-// the CDN importmap at runtime; when WebGL or the CDN is unavailable the caller
-// renders a text fallback and the rest of the app keeps working.
+// 3D union map: metabolites as points, reactions as substrate to product edges,
+// coloured by pathway group. The 71 central-carbon metabolites (esch flag in the
+// graph data) sit at the Escher e_coli_core coordinates on a flat sheet at z=0,
+// so glycolysis, the TCA cycle and the PPP read from their positions and the
+// ordinary reaction edges alone; they get no special styling. three.js is loaded
+// from the CDN importmap at runtime; when WebGL or the CDN is unavailable the
+// caller renders a text fallback and the rest of the app keeps working.
 
 export async function createMap(container, graph, groupColors, opts = {}) {
   const canvasTest = document.createElement('canvas');
@@ -22,8 +25,18 @@ export async function createMap(container, graph, groupColors, opts = {}) {
 
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0xffffff);
+  // Depth cue for every node and edge alike: white distance fog fades the far
+  // side of the cloud, so the near structure (the z=0 central-carbon sheet in
+  // the default view) separates from the background without any per-group
+  // styling. Ranges sit beyond the default camera distance (~46).
+  scene.fog = new THREE.Fog(0xffffff, 56, 92);
   const camera = new THREE.PerspectiveCamera(45, W() / H(), 0.1, 600);
-  camera.position.set(62, 40, 78);
+  // Default view faces the x-y plane with a small tilt and frames the flat
+  // central-carbon sheet at z=0 (about +-21 units, biomass at the centre), so
+  // the sheet is legible on load instead of edge-on or drowned in the full
+  // cloud; orbit and zoom reach everything else.
+  const HOME = [7, 22, 43];
+  camera.position.set(...HOME);
 
   const renderer = new THREE.WebGLRenderer({ antialias: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -93,6 +106,9 @@ export async function createMap(container, graph, groupColors, opts = {}) {
     else mainIds.push(mid);
   }
 
+  // All nodes render at a fixed pixel size (no distance attenuation), the same
+  // rule for every node: a metabolite that happens to sit near the camera never
+  // balloons into a blob that occludes the structure behind it.
   const col = new THREE.Color();
   function buildPoints(ids, size, opacity, dimGrey) {
     const pos = new Float32Array(ids.length * 3);
@@ -108,12 +124,13 @@ export async function createMap(container, graph, groupColors, opts = {}) {
     geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
     const mat = new THREE.PointsMaterial({
       size, vertexColors: true, map: spriteTex, alphaTest: 0.4,
-      transparent: true, opacity, sizeAttenuation: true,
+      transparent: true, opacity, sizeAttenuation: false,
     });
     return new THREE.Points(geo, mat);
   }
-  const mainPoints = buildPoints(mainIds, 1.3, 0.95, false);
-  const curPoints = buildPoints(curIds, 0.55, 0.4, true);
+  const px = Math.min(window.devicePixelRatio, 2);
+  const mainPoints = buildPoints(mainIds, 4.5 * px, 0.95, false);
+  const curPoints = buildPoints(curIds, 2.5 * px, 0.4, true);
   scene.add(mainPoints, curPoints);
 
   // ---- biomass core: one large labelled node at the exact centre, the sink
@@ -134,7 +151,11 @@ export async function createMap(container, graph, groupColors, opts = {}) {
     scene.add(lab);
   }
 
-  // ---- edges: substrate -> product segments; currency-touching pairs kept dim
+  // ---- edges: substrate -> product segments; currency-touching pairs kept dim.
+  // One opacity for ALL main edges (no special case for the central-carbon
+  // sheet), lifted enough that the reaction edges among the sheet nodes read:
+  // glycolysis as a column, the TCA cycle as a ring.
+  const EDGE_OPACITY = 0.26;
   function buildEdges() {
     const mainPos = [], mainCol = [], curPos = [];
     for (const r of graph.reactions) {
@@ -157,7 +178,7 @@ export async function createMap(container, graph, groupColors, opts = {}) {
     const g1 = new THREE.BufferGeometry();
     g1.setAttribute('position', new THREE.BufferAttribute(new Float32Array(mainPos), 3));
     g1.setAttribute('color', new THREE.BufferAttribute(new Float32Array(mainCol), 3));
-    const e1 = new THREE.LineSegments(g1, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.17 }));
+    const e1 = new THREE.LineSegments(g1, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: EDGE_OPACITY }));
     const g2 = new THREE.BufferGeometry();
     g2.setAttribute('position', new THREE.BufferAttribute(new Float32Array(curPos), 3));
     const e2 = new THREE.LineSegments(g2, new THREE.LineBasicMaterial({ color: 0xCCC8C0, transparent: true, opacity: 0.05 }));
@@ -165,43 +186,6 @@ export async function createMap(container, graph, groupColors, opts = {}) {
   }
   const [mainEdges, curEdges] = buildEdges();
   scene.add(mainEdges, curEdges);
-
-  // ---- canonical pathway backbones: a smooth tube through the ordered
-  // metabolite positions in graph.backbones, coloured by the pathway's group
-  // hue, so the classic topologies read as shapes (glycolysis spine, TCA
-  // ring, PPP branch, ETC chain). The tca list repeats its first id, which is
-  // rendered as a closed ring. Drawn independently of the currency toggle:
-  // several ETC carriers are currency metabolites, but the backbone is a
-  // named structure, not hairball. No text is added; the group colour and the
-  // HUD legend identify each pathway.
-  const backboneMats = [];
-  {
-    const BACKBONE_GROUP = { glycolysis: 'Glycolysis', tca: 'TCA', ppp: 'PPP', etc: 'ETC' };
-    const nodeGeo = new THREE.SphereGeometry(0.68, 14, 10);
-    for (const [key, ids] of Object.entries(graph.backbones || {})) {
-      let seq = ids.map(mid => graph.metabolites[mid]).filter(Boolean);
-      if (seq.length < 2) continue;
-      const closed = ids.length > 2 && ids[0] === ids[ids.length - 1];
-      if (closed) seq = seq.slice(0, -1);          // the closed curve re-joins the first point itself
-      const pts = seq.map(m => new THREE.Vector3(...m.p));
-      const curve = new THREE.CatmullRomCurve3(pts, closed, 'centripetal', 0.5);
-      const mat = new THREE.MeshBasicMaterial({
-        color: groupColors[BACKBONE_GROUP[key]] || '#9AA0A6',
-        transparent: true, opacity: 0.92,
-      });
-      backboneMats.push(mat);
-      const tube = new THREE.Mesh(
-        new THREE.TubeGeometry(curve, Math.max(48, pts.length * 12), 0.34, 10, closed), mat);
-      tube.renderOrder = 6;
-      scene.add(tube);
-      for (const m of seq) {
-        const node = new THREE.Mesh(nodeGeo, mat);
-        node.position.set(...m.p);
-        node.renderOrder = 7;
-        scene.add(node);
-      }
-    }
-  }
 
   // ---- hover tooltip + click focus
   const raycaster = new THREE.Raycaster();
@@ -353,20 +337,18 @@ export async function createMap(container, graph, groupColors, opts = {}) {
   }
 
   function dimBase() {
-    mainEdges.material.opacity = 0.04;
+    mainEdges.material.opacity = 0.05;
     mainPoints.material.opacity = 0.25;
     curEdges.material.opacity = 0.02;
     curPoints.material.opacity = 0.15;
-    backboneMats.forEach(m => { m.opacity = 0.2; });
   }
 
   function maybeUndim() {
     if (hlGroup || koGroup || fluxGroup) return;
-    mainEdges.material.opacity = 0.17;
+    mainEdges.material.opacity = EDGE_OPACITY;
     mainPoints.material.opacity = 0.95;
     curEdges.material.opacity = 0.05;
     curPoints.material.opacity = 0.4;
-    backboneMats.forEach(m => { m.opacity = 0.92; });
   }
 
   // ---- flux-carrying layer: every reaction with nonzero flux in the current
@@ -522,7 +504,7 @@ export async function createMap(container, graph, groupColors, opts = {}) {
     clearFluxEdges,
     setCurrencyVisible(v) { curPoints.visible = v; curEdges.visible = v; },
     resetView() {
-      camera.position.set(62, 40, 78);
+      camera.position.set(...HOME);
       controls.target.set(0, 0, 0);
       focusTo = null; camFrom = null; camTo = null;
     },
