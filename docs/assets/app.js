@@ -1119,7 +1119,6 @@ async function initMap() {
     map.setCurrencyVisible(false);
     $('#toggle-currency').checked = false;
     $('#toggle-currency').addEventListener('change', (e) => map.setCurrencyVisible(e.target.checked));
-    $('#toggle-labels').addEventListener('change', (e) => map.setLabelsVisible(e.target.checked));
     $('#reset-view').addEventListener('click', () => map.resetView());
     $('#clear-highlight').addEventListener('click', clearMapHighlight);
   } catch (e) {

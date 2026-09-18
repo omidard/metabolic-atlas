@@ -45,11 +45,14 @@ export async function createMap(container, graph, groupColors, opts = {}) {
   controls.minDistance = 18;
   controls.maxDistance = 260;
 
-  // ---- shells
+  // ---- shells. The only text in the 3D scene is one compartment label per
+  // shell (from graph.compartment_labels) plus the biomass core label; pathway
+  // groups are identified by colour and the HUD legend, never by floating text.
+  const compLab = graph.compartment_labels || {};
   const shellDefs = [
-    { r: graph.shells.e, label: `extracellular / exchange (r ${graph.shells.e})` },
-    { r: graph.shells.p, label: `periplasm (r ${graph.shells.p})` },
-    { r: graph.shells.c, label: `cytosol (r ${graph.shells.c})` },
+    { r: graph.shells.e, label: compLab.e || 'Extracellular' },
+    { r: graph.shells.p, label: compLab.p || 'Periplasm' },
+    { r: graph.shells.c, label: compLab.c || 'Cytosol' },
   ];
   for (const s of shellDefs) {
     const geo = new THREE.SphereGeometry(s.r, 28, 18);
@@ -163,30 +166,40 @@ export async function createMap(container, graph, groupColors, opts = {}) {
   const [mainEdges, curEdges] = buildEdges();
   scene.add(mainEdges, curEdges);
 
-  // ---- pathway-group sector labels on the outer shell
-  const sectorLabels = [];
+  // ---- canonical pathway backbones: a smooth tube through the ordered
+  // metabolite positions in graph.backbones, coloured by the pathway's group
+  // hue, so the classic topologies read as shapes (glycolysis spine, TCA
+  // ring, PPP branch, ETC chain). The tca list repeats its first id, which is
+  // rendered as a closed ring. Drawn independently of the currency toggle:
+  // several ETC carriers are currency metabolites, but the backbone is a
+  // named structure, not hairball. No text is added; the group colour and the
+  // HUD legend identify each pathway.
+  const backboneMats = [];
   {
-    const sums = new Map();
-    for (const mid of mainIds) {
-      const m = graph.metabolites[mid];
-      const v = sums.get(m.g) || [0, 0, 0, 0];
-      v[0] += m.p[0]; v[1] += m.p[1]; v[2] += m.p[2]; v[3]++;
-      sums.set(m.g, v);
-    }
-    for (const g of graph.groups) {
-      const v = sums.get(g);
-      if (!v || v[3] < 3) continue;
-      const len = Math.hypot(v[0], v[1], v[2]);
-      if (len < 1e-6) continue;
-      const R = graph.shells.e + 5;
-      const div = document.createElement('div');
-      div.className = 'sector-label';
-      div.textContent = g;
-      div.style.color = groupColors[g] ? '#1A1D21' : '';
-      const lab = new CSS2DObject(div);
-      lab.position.set(v[0] / len * R, v[1] / len * R, v[2] / len * R);
-      scene.add(lab);
-      sectorLabels.push(lab);
+    const BACKBONE_GROUP = { glycolysis: 'Glycolysis', tca: 'TCA', ppp: 'PPP', etc: 'ETC' };
+    const nodeGeo = new THREE.SphereGeometry(0.68, 14, 10);
+    for (const [key, ids] of Object.entries(graph.backbones || {})) {
+      let seq = ids.map(mid => graph.metabolites[mid]).filter(Boolean);
+      if (seq.length < 2) continue;
+      const closed = ids.length > 2 && ids[0] === ids[ids.length - 1];
+      if (closed) seq = seq.slice(0, -1);          // the closed curve re-joins the first point itself
+      const pts = seq.map(m => new THREE.Vector3(...m.p));
+      const curve = new THREE.CatmullRomCurve3(pts, closed, 'centripetal', 0.5);
+      const mat = new THREE.MeshBasicMaterial({
+        color: groupColors[BACKBONE_GROUP[key]] || '#9AA0A6',
+        transparent: true, opacity: 0.92,
+      });
+      backboneMats.push(mat);
+      const tube = new THREE.Mesh(
+        new THREE.TubeGeometry(curve, Math.max(48, pts.length * 12), 0.34, 10, closed), mat);
+      tube.renderOrder = 6;
+      scene.add(tube);
+      for (const m of seq) {
+        const node = new THREE.Mesh(nodeGeo, mat);
+        node.position.set(...m.p);
+        node.renderOrder = 7;
+        scene.add(node);
+      }
     }
   }
 
@@ -344,6 +357,7 @@ export async function createMap(container, graph, groupColors, opts = {}) {
     mainPoints.material.opacity = 0.25;
     curEdges.material.opacity = 0.02;
     curPoints.material.opacity = 0.15;
+    backboneMats.forEach(m => { m.opacity = 0.2; });
   }
 
   function maybeUndim() {
@@ -352,6 +366,7 @@ export async function createMap(container, graph, groupColors, opts = {}) {
     mainPoints.material.opacity = 0.95;
     curEdges.material.opacity = 0.05;
     curPoints.material.opacity = 0.4;
+    backboneMats.forEach(m => { m.opacity = 0.92; });
   }
 
   // ---- flux-carrying layer: every reaction with nonzero flux in the current
@@ -506,7 +521,6 @@ export async function createMap(container, graph, groupColors, opts = {}) {
     setFluxEdges,
     clearFluxEdges,
     setCurrencyVisible(v) { curPoints.visible = v; curEdges.visible = v; },
-    setLabelsVisible(v) { sectorLabels.forEach(l => { l.visible = v; }); },
     resetView() {
       camera.position.set(62, 40, 78);
       controls.target.set(0, 0, 0);
