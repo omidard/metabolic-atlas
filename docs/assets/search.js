@@ -19,6 +19,7 @@ export function buildSearchGraph(graph, meta, selectedSpecies) {
     list.push(rxn);
   };
   for (const r of graph.reactions) {
+    if (r.core) continue;   // the representative biomass assembly is a map visual, not a searchable reaction
     if (!r.sp.some(s => spSet.has(s))) continue;
     const info = meta.rxns[r.id] || null;
     const d = info ? info.d : 1;

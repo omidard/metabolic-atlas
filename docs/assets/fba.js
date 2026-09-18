@@ -140,23 +140,39 @@ export function productTarget(gem, mid) {
   };
 }
 
-// Directed step constraints for a pathway in this GEM: each step's carried
-// alternatives must sum (in the pathway direction) to at least STEP_MIN_FLUX.
-// Returns {stepCons, missingStep} where missingStep is the first step index the
-// GEM does not carry, or null.
-export function stepConstraints(gem, pathway) {
-  const gemRxns = new Set(gem.reactions.map(r => r.id));
-  const stepCons = [];
-  for (let i = 0; i < pathway.steps.length; i++) {
+// Per-GEM realization of a pathway step: the GEM's OWN reactions that
+// interconvert the step's metabolite pair, with the sign that converts
+// from -> to. Realizations come from the GEM's stoichiometry, never from the
+// union graph's alternative ids: the union merges reactions by id across
+// species, and the same id can carry a different stoichiometry per GEM
+// (measured: D_LACtex is lac__D_p -> lac__D_e in one species and
+// lac__D_c -> lac__D_e in another), so union-id lookups both miss real
+// realizations (false infeasible) and credit wrong-direction ones.
+export function stepRealizations(gem, pathway) {
+  const steps = [];
+  for (const st of pathway.steps) {
     const vars = [];
-    const seen = new Set();
-    for (const alt of pathway.steps[i].rxns) {
-      if (!gemRxns.has(alt.id) || seen.has(alt.id)) continue;
-      seen.add(alt.id);
-      vars.push({ name: alt.id, coef: alt.dir === 'rev' ? -1 : 1 });
+    for (const r of gem.reactions) {
+      const a = r.stoich[st.from], b = r.stoich[st.to];
+      if (a == null || b == null) continue;
+      if (a < 0 && b > 0) vars.push({ name: r.id, coef: 1 });
+      else if (a > 0 && b < 0) vars.push({ name: r.id, coef: -1 });
     }
-    if (!vars.length) return { stepCons: null, missingStep: i };
-    stepCons.push({ name: `step_${i}`, vars, lb: STEP_MIN_FLUX });
+    steps.push(vars);
+  }
+  return steps;
+}
+
+// Directed step constraints for a pathway in this GEM: each step's realized
+// reactions must sum (in the pathway direction) to at least STEP_MIN_FLUX.
+// Returns {stepCons, missingStep} where missingStep is the first step index
+// the GEM cannot realize at all, or null.
+export function stepConstraints(gem, pathway) {
+  const real = stepRealizations(gem, pathway);
+  const stepCons = [];
+  for (let i = 0; i < real.length; i++) {
+    if (!real[i].length) return { stepCons: null, missingStep: i };
+    stepCons.push({ name: `step_${i}`, vars: real[i], lb: STEP_MIN_FLUX });
   }
   return { stepCons, missingStep: null };
 }
@@ -174,7 +190,9 @@ export async function pathwayFeasibility(gem, acc, mediumBounds, pathway, target
   });
   const s = await solve(glpk, lp);
   const feasible = s.optimal && s.z > OPT_TOL;
-  return { testable: true, feasible, productFlux: s.optimal ? s.z : null, status: s.status };
+  // vars: the optimal solution (per-reaction fluxes), exposed so the caller can
+  // read the substrate uptake for a yield basis; no solver change.
+  return { testable: true, feasible, productFlux: s.optimal ? s.z : null, status: s.status, vars: s.optimal ? s.vars : null };
 }
 
 // Per-step diagnosis of an infeasible pathway: for each step, maximise the
@@ -233,7 +251,7 @@ export async function pathwayPFBA(gem, acc, mediumBounds, pathway, target, produ
 
 // FVA over the given reaction ids with product flux held at >= 0.99 * optimum
 // and the step constraints active. onProgress(done, total).
-export async function pathwayFVA(gem, acc, mediumBounds, pathway, target, productOpt, rxnIds, onProgress) {
+export async function pathwayFVA(gem, acc, mediumBounds, pathway, target, productOpt, rxnIds, onProgress, shouldStop) {
   const glpk = await getGLPK();
   const { stepCons } = stepConstraints(gem, pathway);
   if (!stepCons) return { optimal: false, ranges: {} };
@@ -249,6 +267,7 @@ export async function pathwayFVA(gem, acc, mediumBounds, pathway, target, produc
   const ranges = {};
   let done = 0;
   for (const rid of rxnIds) {
+    if (shouldStop && shouldStop()) return { optimal: true, ranges, cancelled: true, done, total: rxnIds.length };
     lp.objective = { direction: glpk.GLP_MIN, name: 'fva', vars: [{ name: rid, coef: 1 }] };
     const mn = await solve(glpk, lp);
     lp.objective = { direction: glpk.GLP_MAX, name: 'fva', vars: [{ name: rid, coef: 1 }] };

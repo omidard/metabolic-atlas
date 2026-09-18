@@ -5,7 +5,7 @@
 // carries its denominator; a heuristic that fails says so and never claims
 // impossibility.
 
-import { loadGem, loadMedia, setEdit, clearEdit, listEdits, onEditsChanged, fmt, downloadBlob, csvEscape } from './data.js';
+import { loadGem, loadMedia, setEdit, clearEdit, listEdits, onEditsChanged, fmt, downloadBlob, csvEscape, geneLabel, geneLabelHTML, gprLabelHTML } from './data.js';
 import { statusName } from './fba.js';
 import { getContext, setContext, onContext } from './context.js';
 import { chartBlock, stackBar, histogram, divergingBars, quantileRows, pairedBars, fitWidth } from './charts.js';
@@ -863,8 +863,9 @@ export async function initAnalysis(root, ctx) {
   }
 
   function rowMatchesFilter(r, q) {
+    const gs = (st.gem && st.gem.gsym) || {};
     return r.id.toLowerCase().includes(q) || (r.name || '').toLowerCase().includes(q)
-      || (r.genes || []).some(g => g.toLowerCase().includes(q));
+      || (r.genes || []).some(g => g.toLowerCase().includes(q) || (gs[g] || '').toLowerCase().includes(q));
   }
 
   function filteredSweepRows() {
@@ -988,7 +989,7 @@ export async function initAnalysis(root, ctx) {
       session_bound_edits: listEdits(st.acc),
     };
     const rows = st.sweep.rows.map(r => ({
-      reaction: r.id, name: r.name, genes: (r.genes || []).join(';'),
+      reaction: r.id, name: r.name, genes: (r.genes || []).map(l => geneLabel(st.gem, l)).join(';'),
       ko_mu: r.lethalNoSteadyState ? 'no_steady_state' : r.mu,
       ko_product_max: r.productMax, ko_product_floor: r.floor,
       class: r.cls, bounds_already_zero: !!r.alreadyClosed,
@@ -1183,10 +1184,10 @@ export async function initAnalysis(root, ctx) {
       koTable = `
         <p class="count">${res.koSet.length} knockout${res.koSet.length === 1 ? '' : 's'} applied by the search (of at most ${res.K}):</p>
         <div class="tablewrap" style="max-width:760px"><table class="data">
-          <thead><tr><th scope="col">Reaction</th><th scope="col">Name</th><th scope="col">Genes (GPR)</th></tr></thead>
+          <thead><tr><th scope="col">Reaction</th><th scope="col">Name</th><th scope="col">Genes (symbol + locus, GPR)</th></tr></thead>
           <tbody>${res.koSet.map(k => `<tr>
             <td class="mono">${esc(k.id)}</td><td>${esc(k.name)}</td>
-            <td class="mono" style="overflow-wrap:anywhere">${esc(k.gpr || (k.genes || []).join(' ') || 'no gene rule')}</td>
+            <td class="mono gprcell" style="overflow-wrap:anywhere">${k.gpr ? gprLabelHTML(st.gem, k.gpr) : ((k.genes || []).map(l => geneLabelHTML(st.gem, l)).join(' ') || 'no gene rule')}</td>
           </tr>`).join('')}</tbody>
         </table></div>`;
     }
@@ -1440,12 +1441,12 @@ export async function initAnalysis(root, ctx) {
     return `
       <p class="count">${rows.length < list.length ? `Showing the top ${rows.length} of ${fmt.format(list.length)}` : `${fmt.format(list.length)}`} ${label} target${list.length === 1 ? '' : 's'}, ranked by |slope|${rows.length < list.length ? ' (exports include all)' : ''}.</p>
       <div class="tablewrap"><table class="data">
-        <thead><tr><th scope="col">Reaction</th><th scope="col">Name</th><th scope="col">Genes</th>
+        <thead><tr><th scope="col">Reaction</th><th scope="col">Name</th><th scope="col">Genes (symbol + locus)</th>
         <th scope="col">Flux, 0 → max enforced (${UNIT})</th><th scope="col">Slope per unit product</th></tr></thead>
         <tbody>${rows.map(r => `<tr>
           <td class="mono">${esc(r.id)}</td>
           <td>${esc(r.name)}</td>
-          <td class="mono" style="max-width:220px;overflow-wrap:anywhere">${esc((r.genes || []).join(' ') || 'no gene rule')}</td>
+          <td class="mono gprcell" style="max-width:240px;overflow-wrap:anywhere">${(r.genes || []).map(l => geneLabelHTML(st.gem, l)).join(' ') || 'no gene rule'}</td>
           <td class="mono">${fnum(r.v0, 3)} → ${fnum(r.vEnd, 3)}</td>
           <td class="mono">${r.slope.toFixed(4)}</td>
         </tr>`).join('')}</tbody>
@@ -1523,7 +1524,9 @@ export async function initAnalysis(root, ctx) {
     const base = `fseof_${st.acc}_${st.prod}`;
     if (kind === 'json') {
       const pack = (r) => ({
-        reaction: r.id, name: r.name, genes: r.genes, gpr: r.gpr, subsystem: r.subsystem,
+        reaction: r.id, name: r.name, genes: r.genes,
+        genes_labeled: (r.genes || []).map(l => geneLabel(st.gem, l)),
+        gpr: r.gpr, subsystem: r.subsystem,
         slope: r.slope, flux_start: r.v0, flux_end: r.vEnd, abs_flux_change: r.absChange,
         flux_per_level: r.fluxes,
       });
@@ -1531,7 +1534,7 @@ export async function initAnalysis(root, ctx) {
         `${base}.json`, 'application/json');
     } else {
       const head = 'trend,reaction,name,genes,subsystem,slope_per_unit_product,flux_at_zero,flux_at_max_enforced,abs_flux_change';
-      const row = (t, r) => [t, r.id, r.name, (r.genes || []).join(';'), r.subsystem, r.slope, r.v0, r.vEnd, r.absChange].map(csvEscape).join(',');
+      const row = (t, r) => [t, r.id, r.name, (r.genes || []).map(l => geneLabel(st.gem, l)).join(';'), r.subsystem, r.slope, r.v0, r.vEnd, r.absChange].map(csvEscape).join(',');
       const csv = [
         `# FSEOF targets: GEM ${meta.gem} on ${meta.medium}; product ${meta.product}; ${res.up.length} amplification + ${res.down.length} attenuation of ${meta.scope}; ${meta.levels_solved} levels; ${meta.classification}`,
         head,
@@ -1561,9 +1564,10 @@ export async function initAnalysis(root, ctx) {
       const query = q.trim().toLowerCase();
       if (!query) { close(); return; }
       const scored = [];
+      const gs = (st.gem && st.gem.gsym) || {};
       for (const r of items) {
         const idL = r.id.toLowerCase(), nmL = (r.name || '').toLowerCase();
-        const inGenes = (r.genes || []).some(g => g.toLowerCase().includes(query));
+        const inGenes = (r.genes || []).some(g => g.toLowerCase().includes(query) || (gs[g] || '').toLowerCase().includes(query));
         let s = -1;
         if (idL === query) s = 0;
         else if (idL.startsWith(query) || nmL.startsWith(query)) s = 1;
@@ -1574,7 +1578,7 @@ export async function initAnalysis(root, ctx) {
       const all = scored.map(x => x[1]);
       options = all.slice(0, 40);
       if (!all.length) {
-        listbox.innerHTML = `<li class="mcap" role="presentation">No non-exchange reaction of ${esc(st.acc)} matches "${esc(q)}" (searching ${fmt.format(items.length)} ids, names and genes).</li>`;
+        listbox.innerHTML = `<li class="mcap" role="presentation">No non-exchange reaction of ${esc(st.acc)} matches "${esc(q)}" (searching ${fmt.format(items.length)} ids, names, gene symbols and locus tags).</li>`;
         open(); return;
       }
       const cap = all.length > options.length

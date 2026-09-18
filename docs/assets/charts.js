@@ -22,8 +22,20 @@ export const GROUP_COLORS = {
   'Ion transport': '#AE3F6B',
   'Transport': '#7A6A52',
   'Other': '#98948C',
+  'Biomass': '#3A3E45',
 };
 export const NEUTRAL_BAR = '#98948C';
+
+// ---- flux-search colour tiers on the 3D map (operator-fixed semantics):
+// pale orange = carries flux in the pFBA solution; vivid cyan = shortest
+// feasible pathway; pale cyan = other feasible pathways; infeasible stays dim.
+export const SEARCH_COLORS = {
+  fluxEdge: '#F2A65E',
+  best: '#009FC4',
+  alt: '#9AD4E2',
+  infeasible: '#B9B5AC',
+  untested: '#E4E1DA',
+};
 
 const nf = new Intl.NumberFormat('en-US');
 const fmtN = (x) => nf.format(x);
@@ -271,8 +283,64 @@ export function pairedBars(groups, { width = 420, height = 170, unit = '', value
   </svg>`;
 }
 
+// ---- FVA envelope vs sampled distribution, one shared flux axis per pathway.
+// rows: [{label, fva: {min, max} | null, s: {min, p5, median, p95, max} | null}].
+// Per row two lanes: top = FVA [min, max] as an outlined envelope bar; bottom =
+// sampling p5-95 filled band with median tick and min-max whisker. A null lane
+// renders as "not computed", never as a zero-width bar.
+export function fvaSamplingRows(rows, { width = 380, unit = 'mmol gDW-1 h-1', color = 'var(--accent)', envColor = '#6A7077' } = {}) {
+  const rowH = 40, mT = 30, mB = 24, labelW = 96, valW = 98;
+  const H = mT + rows.length * rowH + mB;
+  const iw = width - labelW - valW - 6;   // bars never enter the value gutter
+  const vals = [];
+  for (const r of rows) {
+    if (r.fva && r.fva.min != null) { vals.push(r.fva.min, r.fva.max); }
+    if (r.s) { vals.push(r.s.min, r.s.max); }
+  }
+  if (!vals.length) return '<p class="status">not computed</p>';
+  let lo = Math.min(...vals, 0), hi = Math.max(...vals, 1e-9);
+  if (hi - lo < 1e-9) { hi = lo + 1; }
+  const pad = (hi - lo) * 0.06;
+  lo -= pad; hi += pad;
+  const X = (v) => labelW + (v - lo) / (hi - lo) * iw;
+  const ticks = niceTicks(lo, hi, 4);
+  return `<svg width="${width}" height="${H}" role="img"
+    aria-label="Per reaction: FVA flux range and sampled flux distribution, ${esc(unit)}. ${esc(rows.map(r =>
+      `${r.label}: FVA ${r.fva && r.fva.min != null ? r.fva.min.toPrecision(3) + ' to ' + r.fva.max.toPrecision(3) : 'not computed'}, sampled median ${r.s ? r.s.median.toPrecision(3) : 'not computed'}`).join('; '))}">
+    ${ticks.map(t => `<line x1="${X(t)}" x2="${X(t)}" y1="${mT - 4}" y2="${H - mB}" stroke="var(--line)"/>
+      <text x="${X(t)}" y="${H - 9}" text-anchor="middle" class="ch-svg-dim">${tickLabel(t)}</text>`).join('')}
+    ${lo < 0 && hi > 0 ? `<line x1="${X(0)}" x2="${X(0)}" y1="${mT - 4}" y2="${H - mB}" stroke="var(--line-strong)"/>` : ''}
+    <text x="${labelW}" y="${mT - 16}" class="ch-svg-dim">flux (${esc(unit)})</text>
+    <text x="${labelW}" y="${mT - 4}" class="ch-svg-dim">outline = FVA range · band = sampled 5-95%, tick = median, whisker = min to max</text>
+    ${rows.map((r, i) => {
+      const y0 = mT + i * rowH;
+      const yF = y0 + 12, yS = y0 + 27;
+      const gx = width - 2;   // value gutter, right-aligned, clear of the bars
+      const fvaEl = (r.fva && r.fva.min != null && r.fva.max != null)
+        ? `<rect x="${X(r.fva.min).toFixed(1)}" y="${yF - 5}" width="${Math.max(X(r.fva.max) - X(r.fva.min), 1.5).toFixed(1)}" height="10" rx="2"
+             fill="none" stroke="${envColor}" stroke-width="1.5"/>
+           <text x="${gx}" y="${yF + 4}" text-anchor="end" class="ch-svg-dim">[${fluxNum(r.fva.min)}, ${fluxNum(r.fva.max)}]</text>`
+        : `<text x="${labelW + 4}" y="${yF + 4}" class="ch-svg-dim">FVA not computed</text>`;
+      const sEl = r.s
+        ? `<line x1="${X(r.s.min).toFixed(1)}" x2="${X(r.s.max).toFixed(1)}" y1="${yS}" y2="${yS}" stroke="var(--line-strong)" stroke-width="1"/>
+           <rect x="${X(r.s.p5).toFixed(1)}" y="${yS - 5}" width="${Math.max(X(r.s.p95) - X(r.s.p5), 1.5).toFixed(1)}" height="10" rx="2" fill="${color}" fill-opacity="0.8"/>
+           <line x1="${X(r.s.median).toFixed(1)}" x2="${X(r.s.median).toFixed(1)}" y1="${yS - 7}" y2="${yS + 7}" stroke="var(--ink)" stroke-width="2"/>
+           <text x="${gx}" y="${yS + 4}" text-anchor="end" class="ch-svg-dim">med ${fluxNum(r.s.median)}</text>`
+        : `<text x="${labelW + 4}" y="${yS + 4}" class="ch-svg-dim">sampling not computed</text>`;
+      return `<text x="0" y="${y0 + rowH / 2 + 4}" class="ch-svg-label" style="font-family:var(--mono)">${esc(r.label)}</text>${fvaEl}${sEl}`;
+    }).join('')}
+  </svg>`;
+}
+
+export function fluxNum(v) {
+  if (v == null) return 'nc';
+  const a = Math.abs(v);
+  if (a < 5e-4 && a > 0) return v.toExponential(1);
+  return String(+v.toFixed(3));
+}
+
 // ---- headline stat card with an optional comparison bullet vs a mean.
-export function statCard(k, v, d, { mean = null, meanLabel = '', color = 'var(--accent)' } = {}) {
+export function statCard(k, v, d, { mean = null, meanLabel = '', color = 'var(--accent)', hint = '' } = {}) {
   let bullet = '';
   if (mean != null && typeof v === 'number') {
     const max = Math.max(v, mean) * 1.1;
@@ -283,7 +351,7 @@ export function statCard(k, v, d, { mean = null, meanLabel = '', color = 'var(--
       <span class="stat-delta">${dpct == null ? '' : `${dpct >= 0 ? '+' : ''}${dpct.toFixed(0)}% vs ${esc(meanLabel)} ${fmtN(Math.round(mean))}`}</span>
     </div>`;
   }
-  return `<div class="stat"><div class="k">${k}</div><div class="v">${typeof v === 'number' ? fmtN(v) : v}</div><div class="d">${d}</div>${bullet}</div>`;
+  return `<div class="stat"><div class="k">${k}</div><div class="v">${typeof v === 'number' ? fmtN(v) : v}</div><div class="d">${d}</div>${bullet}${hint ? `<div class="stat-hint">${hint}</div>` : ''}</div>`;
 }
 
 // ---- shared tick helpers

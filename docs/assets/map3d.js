@@ -80,10 +80,15 @@ export async function createMap(container, graph, groupColors, opts = {}) {
   ctx.fillStyle = '#fff'; ctx.fill();
   const spriteTex = new THREE.CanvasTexture(spriteCanvas);
 
-  // ---- nodes: main + currency
+  // ---- nodes: main + currency; core nodes (biomass_core) render separately
   const mids = Object.keys(graph.metabolites);
-  const mainIds = [], curIds = [];
-  for (const mid of mids) (graph.metabolites[mid].cur ? curIds : mainIds).push(mid);
+  const mainIds = [], curIds = [], coreIds = [];
+  for (const mid of mids) {
+    const m = graph.metabolites[mid];
+    if (m.core) coreIds.push(mid);
+    else if (m.cur) curIds.push(mid);
+    else mainIds.push(mid);
+  }
 
   const col = new THREE.Color();
   function buildPoints(ids, size, opacity, dimGrey) {
@@ -107,6 +112,24 @@ export async function createMap(container, graph, groupColors, opts = {}) {
   const mainPoints = buildPoints(mainIds, 1.3, 0.95, false);
   const curPoints = buildPoints(curIds, 0.55, 0.4, true);
   scene.add(mainPoints, curPoints);
+
+  // ---- biomass core: one large labelled node at the exact centre, the sink
+  // of the representative biomass assembly (93 common precursors, all species).
+  let coreMesh = null;
+  for (const mid of coreIds) {
+    const m = graph.metabolites[mid];
+    const mat = new THREE.MeshBasicMaterial({ color: groupColors[m.g] || '#3A3E45' });
+    coreMesh = new THREE.Mesh(new THREE.SphereGeometry(2.4, 24, 18), mat);
+    coreMesh.position.set(...m.p);
+    coreMesh.renderOrder = 8;
+    scene.add(coreMesh);
+    const div = document.createElement('div');
+    div.className = 'core-label';
+    div.textContent = m.n || mid;
+    const lab = new CSS2DObject(div);
+    lab.position.set(m.p[0], m.p[1] + 3.6, m.p[2]);
+    scene.add(lab);
+  }
 
   // ---- edges: substrate -> product segments; currency-touching pairs kept dim
   function buildEdges() {
@@ -242,23 +265,37 @@ export async function createMap(container, graph, groupColors, opts = {}) {
     return mesh;
   }
 
+  // opts.others: [[metSeq], ...] alternative (longer) feasible pathways drawn
+  // in opts.altColor as thin pale cylinders under the main (vivid) pathway, so
+  // the eye is drawn to the best route while the alternatives stay readable.
   function highlightPathway(metSeq, accentHex, opts = {}) {
     clearHighlight();
     const pts = metSeq.map(mid => graph.metabolites[mid]).filter(Boolean);
     if (pts.length < 2) return;
     hlGroup = new THREE.Group();
 
+    if (opts.others && opts.others.length && opts.altColor) {
+      const altMat = new THREE.MeshBasicMaterial({ color: opts.altColor, transparent: true, opacity: 0.8, depthTest: false });
+      for (const seq of opts.others) {
+        const apts = seq.map(mid => graph.metabolites[mid]).filter(Boolean);
+        for (let i = 0; i < apts.length - 1; i++) {
+          const seg = cylinderBetween(apts[i].p, apts[i + 1].p, 0.13, altMat);
+          if (seg) { seg.renderOrder = 9; hlGroup.add(seg); }
+        }
+      }
+    }
+
     const weights = opts.weights || null;   // one |flux| per step, or null
     let wMax = 0;
     if (weights) for (const w of weights) if (w != null && w > wMax) wMax = w;
 
-    const mat = new THREE.MeshBasicMaterial({ color: accentHex, transparent: true, opacity: 0.95, depthTest: false });
+    const mat = new THREE.MeshBasicMaterial({ color: accentHex, transparent: true, opacity: 0.98, depthTest: false });
     const segs = [];
     for (let i = 0; i < pts.length - 1; i++) {
-      let radius = 0.24;
+      let radius = 0.3;
       if (weights && wMax > 1e-9) {
         const w = weights[i] == null ? 0 : Math.abs(weights[i]);
-        radius = 0.12 + 0.55 * (w / wMax);
+        radius = 0.14 + 0.55 * (w / wMax);
       }
       const seg = cylinderBetween(pts[i].p, pts[i + 1].p, radius, mat);
       if (seg) { hlGroup.add(seg); segs.push(seg); }
@@ -270,10 +307,7 @@ export async function createMap(container, graph, groupColors, opts = {}) {
     hlGroup.add(nodes);
     scene.add(hlGroup);
 
-    mainEdges.material.opacity = 0.04;
-    mainPoints.material.opacity = 0.25;
-    curEdges.material.opacity = 0.02;
-    curPoints.material.opacity = 0.15;
+    dimBase();
 
     // frame the camera on the pathway's bounding sphere
     const box = new THREE.Box3();
@@ -302,14 +336,68 @@ export async function createMap(container, graph, groupColors, opts = {}) {
       scene.remove(hlGroup);
       hlGroup = null;
     }
-    if (!koGroup) undim();
+    maybeUndim();
   }
 
-  function undim() {
+  function dimBase() {
+    mainEdges.material.opacity = 0.04;
+    mainPoints.material.opacity = 0.25;
+    curEdges.material.opacity = 0.02;
+    curPoints.material.opacity = 0.15;
+  }
+
+  function maybeUndim() {
+    if (hlGroup || koGroup || fluxGroup) return;
     mainEdges.material.opacity = 0.17;
     mainPoints.material.opacity = 0.95;
     curEdges.material.opacity = 0.05;
     curPoints.material.opacity = 0.4;
+  }
+
+  // ---- flux-carrying layer: every reaction with nonzero flux in the current
+  // solution, drawn as pale-orange substrate-to-product segments under the
+  // pathway tiers. Currency-touching segment pairs are not drawn (hairball),
+  // which the caller's legend states.
+  let fluxGroup = null;
+  function setFluxEdges(rids, colorHex) {
+    clearFluxEdges();
+    if (!rxnIndex) rxnIndex = new Map(graph.reactions.map(r => [r.id, r]));
+    let drawn = 0;
+    const pos = [];
+    for (const rid of rids) {
+      const r = rxnIndex.get(rid);
+      if (!r || r.core) continue;
+      let any = false;
+      for (const sMid of r.s) {
+        const ms = graph.metabolites[sMid];
+        if (!ms || ms.cur) continue;
+        for (const pMid of r.p) {
+          const mp = graph.metabolites[pMid];
+          if (!mp || mp.cur || mp.core) continue;
+          pos.push(...ms.p, ...mp.p);
+          any = true;
+        }
+      }
+      if (any) drawn++;
+    }
+    if (!pos.length) return { drawn: 0, total: rids.length };
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pos), 3));
+    const lines = new THREE.LineSegments(g, new THREE.LineBasicMaterial({ color: colorHex, transparent: true, opacity: 0.65, depthTest: false }));
+    lines.renderOrder = 8;
+    fluxGroup = lines;
+    scene.add(fluxGroup);
+    dimBase();
+    return { drawn, total: rids.length };
+  }
+
+  function clearFluxEdges() {
+    if (fluxGroup) {
+      fluxGroup.geometry.dispose();
+      scene.remove(fluxGroup);
+      fluxGroup = null;
+    }
+    maybeUndim();
   }
 
   // ---- knockout marks: every substrate-to-product segment of the named union
@@ -350,10 +438,7 @@ export async function createMap(container, graph, groupColors, opts = {}) {
       }
     }
     scene.add(koGroup);
-    mainEdges.material.opacity = 0.04;
-    mainPoints.material.opacity = 0.25;
-    curEdges.material.opacity = 0.02;
-    curPoints.material.opacity = 0.15;
+    dimBase();
     if (centers.length) {
       const box = new THREE.Box3();
       for (const c of centers) box.expandByPoint(c);
@@ -369,7 +454,7 @@ export async function createMap(container, graph, groupColors, opts = {}) {
       scene.remove(koGroup);
       koGroup = null;
     }
-    if (!hlGroup) undim();
+    maybeUndim();
   }
 
   // ---- render loop
@@ -418,6 +503,8 @@ export async function createMap(container, graph, groupColors, opts = {}) {
     clearHighlight,
     highlightReactions,
     clearReactionHighlight,
+    setFluxEdges,
+    clearFluxEdges,
     setCurrencyVisible(v) { curPoints.visible = v; curEdges.visible = v; },
     setLabelsVisible(v) { sectorLabels.forEach(l => { l.visible = v; }); },
     resetView() {

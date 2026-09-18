@@ -6,11 +6,15 @@ primary_control	search-sub	#sub-input	Substrate picker	metabolite combobox over 
 primary_control	search-prod	#prod-input	Product picker	metabolite combobox over the union map
 primary_control	search-run	#run-search	Search pathways button	runs the Discover pathway enumeration
 primary_control	nav-model	#nav-model	Model stage nav link	opens the GEM dashboard, browser and exports
-primary_control	nav-simulate	#nav-simulate	Simulate stage nav link	opens the flux-feasibility stage; its Test-feasibility button (#sim-run) lives on the #/simulate route and is probed by the project's own headless pass at 390 and 1440
+primary_control	nav-simulate	#nav-simulate	Simulate stage nav link	opens the flux stage; its run button (#sim-run), cancel (#sim-cancel) and sample-count input (#sim-samples) live on the #/simulate route and are probed by tools/verify_headless.mjs at 390 and 1440
+primary_control	sim-samples	#sim-samples	Flux samples per pathway input	labelled number input, 10 to 200 (default 40); mode2 clamps out-of-range values
+primary_control	sim-cancel	#sim-cancel	Cancel button for a running flux test	visible only while a run is active; a cancelled run reports the remainder as untested, never as infeasible
+primary_control	len-filter	.lenbar	Pathway-length histogram bars	real buttons (keyboard-operable) filtering the results list; aria-pressed marks the active filter
+primary_control	sort-feas	#sort-select #feas-only	Sort select + feasible-only toggle	flux sort and feasible-only stay disabled with a stated reason until a Simulate run exists
 primary_control	nav-engineer	#nav-engineer	Engineer stage nav link	opens the strain-design tool cards
 headline_claim	dataset-line	#dataset-line	metabolites, currency and reactions in the union map with their denominators	GRAPH.n_metabolites, GRAPH.n_reactions, metList currency count in app.js boot
 headline_claim	results-summary	#results-summary	pathway count and best-carrier count, each with its denominator	pathways.length and pw.carriers of META.accs.length in renderResults (app.js)
-capped_list	pathway-cards	#results-body	20 pathway cards per Show-more batch	pathways.length printed in the more-bar status (app.js showMore)
+capped_list	pathway-cards	#pathway-list	20 pathway cards per Show-more batch	view.length AND pathways.length printed in the more-bar status when filtered (app.js renderCardList)
 capped_list	rxn-alts	.step	6 alternative reactions per pathway step	st.rxns.length printed beside the slice (app.js pathwayCard CAP=6)
 capped_list	gene-list	#gene-list	300 genes per filter view	list.length vs gem.genes.length printed in renderGeneList (gem.js CAP=300)
 capped_list	fseof-targets	#an-fseof-out	25 FSEOF targets shown per list	res.up.length / res.down.length printed; CSV exports all (analysis.js fseofTable)
@@ -20,6 +24,10 @@ capped_list	sweep-rows	#an-sweep-table	50 knockout rows per page	list.length and
 budget_cap	maxExpansions		assets/search.js:7	termination.hitBudget	Discover enumeration edge-expansion budget (500,000). searchPathways emits termination{complete,hitPaths,hitBudget,expansions,maxDepth,maxPaths,maxExpansions}; terminationLine renders an incomplete search as "Search incomplete: stopped at the N-expansion budget ... a pathway may exist beyond these caps", never as absence of a route.
 budget_cap	maxPaths		assets/search.js:7	termination.hitPaths	Discover kept-pathway cap (60). Rendered by terminationLine as "stopped at the N-pathway cap"; a capped enumeration is never presented as a complete pathway list.
 budget_cap	maxDepth		assets/search.js:7	termination.maxDepth	Discover maximum pathway length (8 steps). A no-pathway result states "within N steps" and, when the enumeration also hit a cap, that further pathways may exist beyond the caps.
+budget_cap	TOP_N / TOP_DEEP		assets/mode2.js	run summary	Simulate tests feasibility (LP) for the 10 shortest pathways and FVA + sampling for the 5 shortest feasible; the summary prints "N of M tested feasible", "FVA + sampling on D of F feasible" and the untested remainder per run; a cancel prints how far it got and calls the rest untested.
+budget_cap	SAMPLE_CAP / FVA_RID_CAP		assets/mode2.js	card chart caption	flux sampling capped at 200 samples per pathway (user-set, default 40; solved and failed counts printed with the requested denominator, seed stated); FVA capped at the first 30 pathway reactions with "30 of N" printed when capped
+headline_claim	list-controls	#list-controls	pathway-length histogram with per-bar feasible / infeasible / untested counts and the run's tested-of-found denominators	byLen counts + runNote in app.js renderListControls
+capped_list	fva-sampling-chart	.mode2-slot .chart	pathway reactions in the FVA-vs-sampling chart	d.rids.length of d.allRids.length printed in the chart title (mode2.js renderCardDetail)
 external_data	BiGG / MetaNetX / KEGG / RHEA / ChEBI / SEED / HMDB / BioCyc		DATA_TERMS.md	Cross-reference data from KEGG, BiGG, MetaNetX, RHEA, ChEBI, SEED, HMDB and BioCyc	terms and provenance for the linked cross-reference resources
 methods_surface			methods.html	methods and limitations page, linked from the header nav on every stage, the footer, the Simulate method note and each Engineer tool's method note
 async_flow		yes	search, feasibility, sweep, coupling, FSEOF, MOMA, sampling and duals all write to role=status aria-live regions

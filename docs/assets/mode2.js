@@ -6,10 +6,15 @@
 
 import { loadGem, loadMedia, fmt, onEditsChanged } from './data.js';
 import { getContext, setContext, onContext } from './context.js';
-import { getGLPK, maxGrowth, productTarget, pathwayFeasibility, pathwayPFBA, pathwayFVA, stepConstraints, diagnoseSteps, statusName, STEP_MIN_FLUX } from './fba.js';
+import { getGLPK, buildLP, boundType, maxGrowth, productTarget, pathwayFeasibility, pathwayPFBA, pathwayFVA, stepConstraints, stepRealizations, diagnoseSteps, statusName, STEP_MIN_FLUX } from './fba.js';
+import { sampleFluxSpace, carbonCount } from './analysis_engine.js';
+import { chartBlock, fvaSamplingRows, fluxNum } from './charts.js';
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const TOP_N = 10;               // pathways tested automatically per run
+const TOP_N = 10;               // pathways feasibility-tested automatically per run
+const TOP_DEEP = 5;             // feasible pathways given automatic FVA + sampling
+const SAMPLE_MIN = 10, SAMPLE_CAP = 200, SAMPLE_DEFAULT = 40;   // per-pathway browser caps, stated in the UI
+const FLUX_EDGE_TOL = 1e-6;     // |flux| above this counts as carrying flux on the map
 
 export async function initMode2(panel, ctx) {
   // Loading the engine and the media definitions decides whether Mode 2 exists
@@ -26,6 +31,9 @@ export async function initMode2(panel, ctx) {
     sub: null, prod: null,
     run: null,                   // last feasibility run context
     runToken: 0,
+    deep: new Map(),             // idx -> {fva, sample, pfba, rids} per-pathway FVA + sampling
+    cancel: false,               // set by the Cancel control; checked between solves
+    busyDeep: false,
   };
 
   // ---------- working-medium construction ----------
@@ -64,11 +72,13 @@ export async function initMode2(panel, ctx) {
   function invalidateRun(why) {
     if (!state.run) return;
     state.run = null;
+    state.deep = new Map();
     state.runToken++;
     document.querySelectorAll('#results-body .feas-slot, #results-body .mode2-slot, #results-body .flux-slot')
       .forEach(el => { el.innerHTML = ''; });
     const s = document.querySelector('#results-summary .mode2-status');
-    if (s) s.innerHTML = `<span class="status">${why || 'The GEM or medium changed'}; choose "Test feasibility of found pathways" in Simulate to re-test.</span>`;
+    if (s) s.innerHTML = `<span class="status">${why || 'The GEM or medium changed'}; choose "Test the found pathways" in Simulate to re-test.</span>`;
+    if (ctx.onSearchUpdate) ctx.onSearchUpdate('cleared');
   }
 
   // Bound edits and knockouts made in the GEM browser or the Analysis view
@@ -387,22 +397,43 @@ export async function initMode2(panel, ctx) {
     if (slot) slot.innerHTML = `<span class="feas-chip ${cls}">${text}</span>`;
   }
 
+  function sampleCount() {
+    const el = document.querySelector('#sim-samples');
+    const v = el ? parseInt(el.value, 10) : SAMPLE_DEFAULT;
+    if (Number.isNaN(v)) return SAMPLE_DEFAULT;
+    return Math.min(Math.max(v, SAMPLE_MIN), SAMPLE_CAP);
+  }
+
+  function notifySearch(phase) { if (ctx.onSearchUpdate) ctx.onSearchUpdate(phase); }
+
+  function feasibleIdxList() {
+    if (!state.run) return [];
+    return [...state.run.results.entries()]
+      .filter(([, r]) => r.testable && r.feasible)
+      .map(([i]) => i)
+      .sort((a, b) => a - b);
+  }
+
   async function runFeasibility(lastResults) {
     const token = ++state.runToken;
+    state.cancel = false;
     const { res, prod } = lastResults;
     const pathways = res.pathways;
     state.run = null;
+    state.deep = new Map();
     if (!pathways.length) return;
     const gem = state.gem, acc = state.gemAcc, w = state.working;
     const line = summaryLine();
+    setCancelVisible(true);
 
     const target = productTarget(gem, prod);
     if (!target) {
       line.innerHTML = `<span class="status">${esc(acc)} does not contain the product <span class="mono">${esc(prod)}</span>; no pathway can be tested in this GEM.</span>`;
+      setCancelVisible(false);
       return;
     }
     const { bounds, info } = effectiveMedium();
-    state.run = { gem, acc, bounds, target, lastResults, results: new Map() };
+    state.run = { gem, acc, bounds, target, info, lastResults, results: new Map() };
 
     line.innerHTML = `<span class="status">Solving growth on ${esc(w.label)}…</span>`;
     let muText = 'not computed';
@@ -416,18 +447,44 @@ export async function initMode2(panel, ctx) {
     const swapText = info.swapped
       ? `substrate in as carbon source (<span class="mono">${esc(info.subEx)}</span> at lb ${w.carbon_cap ?? -10}${info.closedEx ? `, <span class="mono">${esc(info.closedEx)}</span> closed` : ''})`
       : (info.note ? esc(info.note) : 'carbon source unchanged');
+    state.run.muText = muText;
+    state.run.swapText = swapText;
 
     const nTest = Math.min(TOP_N, pathways.length);
+    let cancelledAt = null;
     for (let i = 0; i < nTest; i++) {
       if (token !== state.runToken) return;
+      if (state.cancel) { cancelledAt = i; break; }
       line.innerHTML = `<span class="status">${esc(acc)} on ${esc(w.label)} · ${muText} · ${swapText} ·
-        testing pathway feasibility ${i + 1} of ${nTest}${pathways.length > nTest ? ` (of ${fmt.format(pathways.length)} pathways; test the rest per card)` : ''}…</span>`;
+        testing pathway feasibility ${i + 1} of ${nTest}${pathways.length > nTest ? ` (of ${fmt.format(pathways.length)} found; test the rest per card)` : ''}…</span>`;
       await testPathway(i, pathways[i], token);
+      notifySearch('progress');
     }
     if (token !== state.runToken) return;
-    const feas = [...state.run.results.values()].filter(r => r.testable && r.feasible).length;
+
+    // FVA + flux sampling for the shortest feasible pathways, deepest first
+    const feasIdx = feasibleIdxList();
+    const deepIdx = feasIdx.slice(0, TOP_DEEP);
+    let deepDone = 0;
+    for (const i of deepIdx) {
+      if (token !== state.runToken) return;
+      if (state.cancel) { if (cancelledAt == null) cancelledAt = nTest; break; }
+      line.innerHTML = `<span class="status">${esc(acc)} on ${esc(w.label)} · FVA + flux sampling on feasible pathway
+        #${i + 1} (${deepDone + 1} of ${deepIdx.length} deep runs; ${sampleCount()} samples each)…</span>`;
+      await deepAnalyse(i, pathways[i], token);
+      deepDone++;
+      notifySearch('progress');
+    }
+    if (token !== state.runToken) return;
+    setCancelVisible(false);
+
+    const tested = state.run.results.size;
+    const feas = feasibleIdxList().length;
+    const cancelTxt = cancelledAt != null
+      ? ` · cancelled by you after ${cancelledAt} of ${nTest} feasibility tests and ${deepDone} of ${deepIdx.length} deep runs; the remainder is untested, not infeasible` : '';
     line.innerHTML = `<span class="status">${esc(acc)} on ${esc(w.label)} · ${muText} · ${swapText} ·
-      ${feas} of ${nTest} tested pathways feasible${pathways.length > nTest ? ` (${fmt.format(pathways.length - nTest)} more untested; use "Test feasibility" on a card)` : ''}.</span>`;
+      ${feas} of ${tested} tested pathways feasible${pathways.length > nTest ? ` (${fmt.format(pathways.length - nTest)} of ${fmt.format(pathways.length)} untested; use "Test this pathway" on a card)` : ''}
+      · FVA + sampling on ${deepDone} of ${feas} feasible${cancelTxt}.</span>`;
 
     // already-rendered cards beyond the auto-tested set get an honest chip + button
     document.querySelectorAll('#results-body .pcard').forEach(c => {
@@ -437,31 +494,25 @@ export async function initMode2(panel, ctx) {
         renderCardDetail(i, pathways[i]);
       }
     });
+    notifySearch('done');
   }
 
+  // Testability comes from the GEM's own step realizations (fba.js), never
+  // from the union presence mask: union ids can differ in stoichiometry per
+  // GEM, so the mask can both over- and under-state carriage.
   async function testPathway(idx, pw, token) {
     const run = state.run;
     if (!run) return;
     const card = ctx.findCard(idx);
-    const accIdx = ctx.graphMeta.accs.findIndex(a => a.acc === run.acc);
-    const carried = accIdx >= 0 && ((pw.mask >> BigInt(accIdx)) & 1n) === 1n;
-    if (!carried) {
-      const { missingStep } = stepConstraints(run.gem, pw);
-      const stepTxt = missingStep != null ? ` (missing step ${missingStep + 1} of ${pw.len})` : '';
-      run.results.set(idx, { testable: false });
-      chip(card, 'na', `not carried by ${esc(run.acc)}${stepTxt}`);
-      renderCardDetail(idx, pw);
-      return;
-    }
     chip(card, 'wait', 'solving…');
     try {
       const r = await pathwayFeasibility(run.gem, run.acc, run.bounds, pw, run.target);
       if (token !== state.runToken) return;
       run.results.set(idx, r);
       if (!r.testable) {
-        chip(card, 'na', `not carried by ${esc(run.acc)} (missing step ${r.missingStep + 1} of ${pw.len})`);
+        chip(card, 'na', `not testable in ${esc(run.acc)} (no reaction realizes step ${r.missingStep + 1} of ${pw.len})`);
       } else if (r.feasible) {
-        chip(card, 'ok', `feasible · product ${r.productFlux.toFixed(2)} mmol gDW<sup>-1</sup> h<sup>-1</sup>`);
+        chip(card, 'ok', `feasible · ${r.productFlux.toFixed(2)} mmol gDW<sup>-1</sup> h<sup>-1</sup>`);
       } else {
         chip(card, 'bad', 'infeasible (this GEM + medium)');
       }
@@ -471,7 +522,132 @@ export async function initMode2(panel, ctx) {
     }
   }
 
-  // Per-card Mode-2 details: definition line + pFBA/FVA button + flux fill-in.
+  // ---------- yield vs substrate uptake, from the feasibility optimum ----------
+  // Basis: the substrate exchange of the run (swapped-in substrate when active,
+  // otherwise the medium's carbon source). mol/mol from the LP solution; C-mol
+  // basis only when both formulas carry a carbon count.
+  function yieldLine(r) {
+    const run = state.run;
+    if (!r.vars || r.productFlux == null) return '';
+    const subEx = (run.info && run.info.subEx) || (state.working && state.working.carbon_exchange);
+    if (!subEx) return ' · yield not computed (no substrate exchange identified)';
+    const up = r.vars[subEx];
+    if (up == null || up >= -1e-9) return ` · yield not computed (no <span class="mono">${esc(subEx)}</span> uptake in the optimum)`;
+    const molmol = r.productFlux / Math.abs(up);
+    const subMid = subEx.replace(/^EX_/, '');
+    const prodMid = run.target.mid || run.lastResults.prod;
+    const fS = run.gem.metabolites.find(m => m.id === subMid);
+    const fP = run.gem.metabolites.find(m => m.id === prodMid) || run.gem.metabolites.find(m => m.id === run.lastResults.prod);
+    const cS = carbonCount(fS && fS.formula), cP = carbonCount(fP && fP.formula);
+    const cmol = (cS && cP) ? molmol * cP / cS : null;
+    return ` · yield ${molmol.toFixed(3)} mol/mol ${cmol != null ? `(${cmol.toFixed(3)} C-mol/C-mol)` : '(C-mol basis not computed: formula lacks a carbon count)'}
+      vs <span class="mono">${esc(subEx)}</span> uptake ${Math.abs(up).toFixed(3)}`;
+  }
+
+  // ---------- FVA + flux sampling per pathway (the deep run) ----------
+  // FVA: min and max flux of each pathway reaction with the product held at
+  // >= 99% of the pathway optimum and every step constraint active (fba.js).
+  // Sampling: random-objective vertex sampling of the SAME constrained space
+  // (analysis_engine), so the sampled distribution sits inside the FVA
+  // envelope and shows where within it flux typically falls.
+  const FVA_RID_CAP = 30;
+
+  function pathwayRids(pw) {
+    const rids = [];
+    for (const vars of stepRealizations(state.run.gem, pw)) {
+      for (const v of vars) if (!rids.includes(v.name)) rids.push(v.name);
+    }
+    return rids;
+  }
+
+  async function samplePathway(pw, productOpt, n, onProgress) {
+    const run = state.run;
+    const glpk = await getGLPK();
+    const { stepCons } = stepConstraints(run.gem, pw);
+    if (!stepCons) return { ok: false, reason: 'pathway not carried by this GEM' };
+    const lp = buildLP(glpk, run.gem, run.bounds, {
+      acc: run.acc, extraCols: run.target.extraCols, stepCons,
+      objective: { direction: 'max', vars: [] },
+    });
+    for (const b of lp.bounds) if (b.name === run.target.id) {
+      b.lb = productOpt * 0.99;
+      b.ub = Math.max(b.ub, productOpt);
+      b.type = boundType(glpk, b.lb, b.ub);
+    }
+    const S = {
+      glpk, gem: run.gem, acc: run.acc, mediumBounds: run.bounds, lp,
+      bIdx: new Map(lp.bounds.map(b => [b.name, b])),
+      rowIdx: new Map(lp.subjectTo.map(row => [row.name, row])),
+      target: run.target, biomass: run.gem.stats.biomass_id,
+      rxnById: new Map(run.gem.reactions.map(r => [r.id, r])),
+      kos: new Set(), solves: 0,
+    };
+    return sampleFluxSpace(S, { n, biomassFrac: 0, seed: 7, onProgress, shouldStop: () => state.cancel });
+  }
+
+  async function deepAnalyse(idx, pw, token) {
+    const run = state.run;
+    if (!run) return;
+    const r = run.results.get(idx);
+    if (!r || !r.testable || !r.feasible) return;
+    const card = ctx.findCard(idx);
+    const prog = card && card.querySelector('[data-m2prog]');
+    const say = (t) => { if (prog) prog.textContent = t; };
+    state.busyDeep = true;
+    try {
+      // pFBA: one parsimonious distribution at the product optimum
+      say('Solving pFBA…');
+      const p = await pathwayPFBA(run.gem, run.acc, run.bounds, pw, run.target, r.productFlux);
+      if (token !== state.runToken) return;
+      const allRids = pathwayRids(pw);
+      const rids = allRids.slice(0, FVA_RID_CAP);
+      // FVA over the pathway reactions
+      const fva = await pathwayFVA(run.gem, run.acc, run.bounds, pw, run.target, r.productFlux, rids,
+        (d, t) => say(`FVA ${d} of ${t} pathway reactions…`), () => state.cancel);
+      if (token !== state.runToken) return;
+      // flux sampling of the same constrained space
+      const n = sampleCount();
+      say(`Flux sampling 0 of ${n}…`);
+      const sample = await samplePathway(pw, r.productFlux, n,
+        (i, t) => say(`Flux sampling ${i} of ${t}…`));
+      if (token !== state.runToken) return;
+      state.deep.set(idx, {
+        rids, allRids, fva, sample,
+        pfba: p.optimal ? p.fluxes : null, pfbaStatus: p.status,
+        stamp: { acc: run.acc, medium: state.working.label, samples: sample.ok ? sample.samples : 0, requested: n },
+      });
+      fillFluxSlots(idx, pw);
+      renderCardDetail(idx, pw);
+      say('');
+    } catch (e) {
+      say(`FVA + sampling failed (${e.message}).`);
+    } finally {
+      state.busyDeep = false;
+    }
+  }
+
+  // Per-reaction pFBA flux + FVA range into the step rows of the card.
+  function fillFluxSlots(idx, pw) {
+    const run = state.run;
+    const card = ctx.findCard(idx);
+    const d = state.deep.get(idx);
+    if (!run || !card || !d) return;
+    const gemRxns = new Set(run.gem.reactions.map(x => x.id));
+    card.querySelectorAll('.rxn-alt').forEach(row => {
+      const rid = row.dataset.rxn;
+      const fslot = row.querySelector('.flux-slot');
+      if (!fslot) return;
+      if (!gemRxns.has(rid)) { fslot.innerHTML = `<span class="fluxval na">not in ${esc(run.acc)}</span>`; return; }
+      const v = d.pfba ? d.pfba[rid] : null;
+      const rr = d.fva && d.fva.ranges[rid];
+      const vTxt = v == null ? 'pFBA not computed' : `v ${fluxNum(v)}`;
+      const rTxt = rr && rr.min != null && rr.max != null ? ` · FVA [${fluxNum(rr.min)}, ${fluxNum(rr.max)}]` : '';
+      fslot.innerHTML = `<span class="fluxval">${vTxt}${rTxt}</span>`;
+    });
+  }
+
+  // Per-card Simulate details: feasibility + yield line, then the FVA-vs-
+  // sampling chart when the deep run has been done, else the run button.
   function renderCardDetail(idx, pw) {
     const run = state.run;
     const card = ctx.findCard(idx);
@@ -480,13 +656,17 @@ export async function initMode2(panel, ctx) {
     if (!slot) return;
     const r = run.results.get(idx);
     if (!r) {
-      slot.innerHTML = `<div class="m2-detail"><span class="status">Not tested on this medium.</span>
-        <button class="btn small" type="button" data-m2test>Test feasibility</button></div>`;
-      slot.querySelector('[data-m2test]').addEventListener('click', () => testPathway(idx, pw, state.runToken));
+      slot.innerHTML = `<div class="m2-detail"><span class="status">Not tested on this GEM + medium.</span>
+        <button class="btn small" type="button" data-m2test>Test this pathway</button>
+        <span class="status" data-m2prog role="status" aria-live="polite"></span></div>`;
+      slot.querySelector('[data-m2test]').addEventListener('click', async () => {
+        await testPathway(idx, pw, state.runToken);
+        notifySearch('done');
+      });
       return;
     }
     if (!r.testable) {
-      slot.innerHTML = `<div class="m2-detail"><span class="status">Not testable: ${esc(run.acc)} does not carry every step of this pathway.</span></div>`;
+      slot.innerHTML = `<div class="m2-detail"><span class="status">Not testable: no reaction of ${esc(run.acc)} interconverts the metabolite pair of step ${r.missingStep != null ? r.missingStep + 1 : '?'} of ${pw.len}.</span></div>`;
       return;
     }
     if (!r.feasible) {
@@ -498,12 +678,52 @@ export async function initMode2(panel, ctx) {
       slot.querySelector('[data-m2diag]').addEventListener('click', () => diagnose(idx, pw));
       return;
     }
-    slot.innerHTML = `<div class="m2-detail">
-      <span class="status">Feasible on ${esc(state.working.label)}: max product flux ${r.productFlux.toFixed(3)} mmol gDW<sup>-1</sup> h<sup>-1</sup> with every step at ≥ ${STEP_MIN_FLUX}.</span>
-      <button class="btn small" type="button" data-m2flux>pFBA + FVA on this pathway</button>
-      <span class="status" data-m2prog role="status" aria-live="polite"></span>
-    </div>`;
-    slot.querySelector('[data-m2flux]').addEventListener('click', () => fluxDetail(idx, pw, r));
+
+    const d = state.deep.get(idx);
+    const head = `<span class="status">Feasible on ${esc(state.working.label)}: max product flux
+      <strong>${r.productFlux.toFixed(3)}</strong> mmol gDW<sup>-1</sup> h<sup>-1</sup>
+      (every step at ≥ ${STEP_MIN_FLUX})${yieldLine(r)}.</span>`;
+
+    if (!d) {
+      slot.innerHTML = `<div class="m2-detail">${head}
+        <button class="btn small" type="button" data-m2deep>Run FVA + flux sampling</button>
+        <span class="status" data-m2prog role="status" aria-live="polite"></span></div>`;
+      slot.querySelector('[data-m2deep]').addEventListener('click', async () => {
+        state.cancel = false;
+        await deepAnalyse(idx, pw, state.runToken);
+        notifySearch('done');
+      });
+      return;
+    }
+
+    // chart rows in pathway-step order
+    const rows = d.rids.map(rid => ({
+      label: rid,
+      fva: d.fva ? d.fva.ranges[rid] || null : null,
+      s: (d.sample && d.sample.ok && d.sample.stats.get(rid)) || null,
+    }));
+    const sNote = d.sample && d.sample.ok
+      ? `${d.sample.samples} of ${d.stamp.requested} requested samples solved${d.sample.failed ? ` (${d.sample.failed} failed)` : ''}${d.sample.cancelled ? '; sampling cancelled early' : ''}, seed ${d.sample.seed}`
+      : `sampling not computed${d.sample && d.sample.reason ? ` (${esc(d.sample.reason)})` : ''}`;
+    const fvaNote = d.fva && d.fva.cancelled
+      ? `FVA cancelled after ${d.fva.done} of ${d.fva.total} reactions` :
+      `FVA over ${d.rids.length}${d.allRids.length > d.rids.length ? ` of ${d.allRids.length}` : ''} pathway reactions`;
+    slot.innerHTML = `<div class="m2-detail m2-deep">${head}</div>
+      ${chartBlock(
+        `FVA range vs sampled flux per pathway reaction (${d.rids.length}${d.allRids.length > d.rids.length ? ` of ${d.allRids.length}` : ''} reactions in ${esc(run.acc)})`,
+        fvaSamplingRows(rows, { width: Math.max(300, Math.min(slot.clientWidth || 380, 560)) }),
+        `${fvaNote}, product held at ≥ 99% of this pathway's optimum with every step constraint active.
+         Sampling: random-objective vertex sampling of the same constrained space; ${sNote}.
+         Units mmol gDW<sup>-1</sup> h<sup>-1</sup>.`)}
+      <div class="m2-detail">
+        <button class="btn small" type="button" data-m2deep>Re-run FVA + sampling (${sampleCount()} samples)</button>
+        <span class="status" data-m2prog role="status" aria-live="polite"></span>
+      </div>`;
+    slot.querySelector('[data-m2deep]').addEventListener('click', async () => {
+      state.cancel = false;
+      await deepAnalyse(idx, pw, state.runToken);
+      notifySearch('done');
+    });
   }
 
   // Per-step relaxation: which steps fail alone, measured, never guessed.
@@ -535,74 +755,37 @@ export async function initMode2(panel, ctx) {
     }
   }
 
-  async function fluxDetail(idx, pw, feas) {
-    const run = state.run;
-    const card = ctx.findCard(idx);
-    if (!run || !card) return;
-    const prog = card.querySelector('[data-m2prog]');
-    const btn = card.querySelector('[data-m2flux]');
-    if (btn) btn.disabled = true;
-    const token = state.runToken;
-    try {
-      prog.textContent = 'Solving pFBA…';
-      const p = await pathwayPFBA(run.gem, run.acc, run.bounds, pw, run.target, feas.productFlux);
-      if (token !== state.runToken) return;
-      if (!p.optimal) { prog.textContent = `pFBA: ${statusName(p.status)}; no flux distribution to show.`; return; }
-
-      // reactions to report: the GEM-carried alternatives of each step
-      const gemRxns = new Set(run.gem.reactions.map(x => x.id));
-      const rids = [];
-      for (const st of pw.steps) for (const alt of st.rxns) {
-        if (gemRxns.has(alt.id) && !rids.includes(alt.id)) rids.push(alt.id);
-      }
-      const fva = await pathwayFVA(run.gem, run.acc, run.bounds, pw, run.target, feas.productFlux, rids,
-        (d, t) => { prog.textContent = `FVA ${d} of ${t} reactions…`; });
-      if (token !== state.runToken) return;
-
-      // fill per-reaction flux + FVA into the step rows
-      card.querySelectorAll('.rxn-alt').forEach(row => {
-        const rid = row.dataset.rxn;
-        const fslot = row.querySelector('.flux-slot');
-        if (!fslot) return;
-        if (!gemRxns.has(rid)) { fslot.innerHTML = `<span class="fluxval na">not in ${esc(run.acc)}</span>`; return; }
-        const v = p.fluxes[rid];
-        const rr = fva.ranges[rid];
-        const vTxt = v == null ? 'not computed' : v.toFixed(3);
-        const rTxt = rr && rr.min != null && rr.max != null ? ` · FVA [${rr.min.toFixed(3)}, ${rr.max.toFixed(3)}]` : '';
-        fslot.innerHTML = `<span class="fluxval">v ${vTxt}${rTxt}</span>`;
-      });
-
-      // per-step directed flux magnitude drives edge thickness on the map
-      const weights = pw.steps.map(st => {
-        let s = 0;
-        for (const alt of st.rxns) {
-          const v = p.fluxes[alt.id];
-          if (v == null) continue;
-          s += (alt.dir === 'rev' ? -1 : 1) * v;
-        }
-        return Math.abs(s);
-      });
-      ctx.showFluxOnMap(pw, idx, weights);
-      prog.innerHTML = `pFBA at product ${feas.productFlux.toFixed(3)} mmol gDW<sup>-1</sup> h<sup>-1</sup>; FVA over ${rids.length} pathway reactions at ≥ 99% of the product optimum. Edge thickness on the map scales with each step's |flux|.`;
-    } catch (e) {
-      prog.textContent = `Flux solve failed (${e.message}).`;
-    } finally {
-      if (btn) btn.disabled = false;
-    }
+  function setCancelVisible(v) {
+    const btn = document.querySelector('#sim-cancel');
+    if (btn) btn.hidden = !v;
   }
 
-  // Decorate pathway cards rendered after a run ("Show more" batches).
+  // Re-decorate any pathway card the list renders or re-renders ("Show more"
+  // batches, filter and sort re-renders): tested cards get their stored chip
+  // and detail back, untested ones an honest "not tested" + test button.
+  function decorateCard(node) {
+    if (!state.run) return;
+    const idx = +node.dataset.pwIdx;
+    const pw = state.run.lastResults.res.pathways[idx];
+    if (!pw) return;
+    const r = state.run.results.get(idx);
+    if (!r) {
+      chip(node, 'na', 'not tested');
+    } else if (!r.testable) {
+      chip(node, 'na', `not testable in ${esc(state.run.acc)}`);
+    } else if (r.feasible) {
+      chip(node, 'ok', `feasible · ${r.productFlux.toFixed(2)} mmol gDW<sup>-1</sup> h<sup>-1</sup>`);
+    } else {
+      chip(node, 'bad', 'infeasible (this GEM + medium)');
+    }
+    renderCardDetail(idx, pw);
+    if (state.deep.has(idx)) fillFluxSlots(idx, pw);
+  }
+
   const mo = new MutationObserver((muts) => {
     if (!state.run || !state.active) return;
     for (const m of muts) for (const n of m.addedNodes) {
-      if (n.nodeType === 1 && n.classList && n.classList.contains('pcard')) {
-        const idx = +n.dataset.pwIdx;
-        const pw = state.run.lastResults.res.pathways[idx];
-        if (pw && !state.run.results.has(idx)) {
-          chip(n, 'na', 'not tested');
-          renderCardDetail(idx, pw);
-        }
-      }
+      if (n.nodeType === 1 && n.classList && n.classList.contains('pcard')) decorateCard(n);
     }
   });
   const resultsBody = document.querySelector('#results-body');
@@ -621,5 +804,41 @@ export async function initMode2(panel, ctx) {
       renderSwapNote();
     },
     runFeasibility,
+    cancelRun() { state.cancel = true; },
+    // Read-only view of the current run for the results list (sorting,
+    // filtering, the length histogram and the map tiers).
+    getRun() {
+      if (!state.run) return null;
+      const feasibleIdx = feasibleIdxList();
+      const bestIdx = feasibleIdx.length ? feasibleIdx[0] : null;
+      let fluxRids = null, bestWeights = null;
+      if (bestIdx != null && state.deep.has(bestIdx)) {
+        const d = state.deep.get(bestIdx);
+        if (d.pfba) {
+          fluxRids = Object.entries(d.pfba)
+            .filter(([, v]) => v != null && Math.abs(v) > FLUX_EDGE_TOL)
+            .map(([rid]) => rid);
+          const pw = state.run.lastResults.res.pathways[bestIdx];
+          bestWeights = stepRealizations(state.run.gem, pw).map(vars => {
+            let s = 0;
+            for (const v of vars) {
+              const f = d.pfba[v.name];
+              if (f == null) continue;
+              s += v.coef * f;
+            }
+            return Math.abs(s);
+          });
+        }
+      }
+      return {
+        acc: state.run.acc,
+        medium: state.working ? state.working.label : null,
+        results: state.run.results,
+        deep: state.deep,
+        feasibleIdx, bestIdx, fluxRids, bestWeights,
+        total: state.run.lastResults.res.pathways.length,
+      };
+    },
+    gemObject() { return state.gem; },
   };
 }

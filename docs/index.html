@@ -100,17 +100,24 @@
   <section class="view" id="view-model" aria-label="Model: GEM dashboard and browser" hidden></section>
 
   <!-- ================= 3 · SIMULATE ================= -->
-  <section class="view" id="view-simulate" aria-label="Simulate: flux feasibility" hidden>
-    <h1>Is a found pathway flux-feasible in the chosen GEM on a medium?</h1>
-    <p class="sub">Feasibility is a linear-programming test per pathway: the product's export is
-      maximised while every pathway step carries flux in the pathway direction, under the GEM's
-      bounds and the medium's uptake limits, solved with GLPK in this browser. The substrate from
-      Discover replaces the medium's carbon source unless switched off below.</p>
+  <section class="view" id="view-simulate" aria-label="Simulate: flux feasibility, FVA and sampling" hidden>
+    <h1>Is a found pathway flux-feasible in the chosen GEM on a medium, and how much flux does it carry?</h1>
+    <p class="sub">Three solvers per pathway, all in this browser (GLPK-WASM): a feasibility LP
+      (product export maximised while every step carries flux in the pathway direction), FVA
+      (each pathway reaction's flux range with the product held at 99% of that optimum), and
+      flux sampling (the distribution of each reaction's flux over random-objective vertices of
+      the same constrained space). The substrate from Discover replaces the medium's carbon
+      source unless switched off below.</p>
     <div id="mode2-host">
       <div class="card"><span class="status">Loading the flux engine (GLPK-WASM, about 250 kB)…</span></div>
     </div>
     <div class="card simrun">
-      <button class="btn primary" id="sim-run" type="button" disabled>Test feasibility of found pathways</button>
+      <button class="btn primary" id="sim-run" type="button" disabled>Test the found pathways (LP + FVA + sampling)</button>
+      <button class="btn small" id="sim-cancel" type="button" hidden>Cancel</button>
+      <div class="field">
+        <label for="sim-samples">Flux samples per pathway (10 to 200)</label>
+        <input type="number" id="sim-samples" value="40" min="10" max="200" step="10">
+      </div>
       <span class="status" id="sim-status" role="status" aria-live="polite"></span>
     </div>
     <div id="sim-dock"></div>

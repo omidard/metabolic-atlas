@@ -3,7 +3,7 @@
 // editable bounds, metabolites, genes with sequences). One GEM at a time,
 // lazily; the choice is written to the session context and carries forward.
 
-import { loadGem, loadSeqs, getEdit, setEdit, clearEdit, clearAllEdits, editCount, fmt, downloadBlob, csvEscape, DATA_RELEASE } from './data.js';
+import { loadGem, loadSeqs, getEdit, setEdit, clearEdit, clearAllEdits, editCount, fmt, downloadBlob, csvEscape, DATA_RELEASE, geneLabel, geneLabelHTML, gprLabelHTML } from './data.js';
 import { getContext, setContext, onContext } from './context.js';
 import { GROUP_COLORS, NEUTRAL_BAR, chartBlock, hBars, stackBar, donut, fractionBar, intervals, statCard, fitWidth } from './charts.js';
 
@@ -172,6 +172,7 @@ function normComp(cRaw) {
 function dashboardHTML() {
   const s = gem.stats;
   const R = gem.reactions.length;
+  const nSym = Object.keys(gem.gsym || {}).length;
 
   // headline cards: this model versus the mean of all registered GEMs
   const allGems = indexCache ? indexCache.gems : [];
@@ -239,11 +240,18 @@ function dashboardHTML() {
   const w = fitWidth(root, 380);
   return `
     <div class="dash-head">
-      ${statCard('Genes', s.genes, 'in model', { mean: mean('genes'), meanLabel, color: speciesAccent })}
-      ${statCard('Reactions', s.reactions, 'in model', { mean: mean('reactions'), meanLabel, color: speciesAccent })}
-      ${statCard('Metabolites', s.metabolites, 'in model', { mean: mean('metabolites'), meanLabel, color: speciesAccent })}
-      ${statCard('Exchanges', s.exchanges, `of ${fmt.format(R)} reactions`)}
-      ${statCard('Transporters', s.transporters, `of ${fmt.format(R)} reactions`)}
+      ${statCard('Genes', s.genes, 'in model', { mean: mean('genes'), meanLabel, color: speciesAccent,
+        hint: 'loci appearing in at least one reaction’s gene rule' })}
+      ${statCard('Reactions', s.reactions, 'in model', { mean: mean('reactions'), meanLabel, color: speciesAccent,
+        hint: 'network size: every route a flux solution can use' })}
+      ${statCard('Metabolites', s.metabolites, 'in model', { mean: mean('metabolites'), meanLabel, color: speciesAccent,
+        hint: `distinct compounds across ${new Set(gem.metabolites.map(m => m.comp)).size} compartments` })}
+      ${statCard('Gene symbols', nSym, `of ${fmt.format(s.genes)} genes`, {
+        hint: 'biological names from the annotation; the rest display locus tags' })}
+      ${statCard('Exchanges', s.exchanges, `of ${fmt.format(R)} reactions`, {
+        hint: 'the environment interface; the medium sets their uptake bounds' })}
+      ${statCard('Transporters', s.transporters, `of ${fmt.format(R)} reactions`, {
+        hint: 'membrane crossings between compartments' })}
     </div>
 
     <div class="chart-grid">
@@ -333,8 +341,8 @@ function renderRxnPanel() {
   p.innerHTML = `
     <div class="tablebar">
       <div class="field" style="flex:1 1 220px">
-        <label for="rxn-search">Filter reactions (id, name, subsystem, GPR, EC)</label>
-        <input type="search" id="rxn-search" value="${esc(rxnFilter)}" placeholder="e.g. PGK or Glycolysis">
+        <label for="rxn-search">Filter reactions (id, name, subsystem, GPR, gene symbol, EC)</label>
+        <input type="search" id="rxn-search" value="${esc(rxnFilter)}" placeholder="e.g. PGK, eutG or Glycolysis">
       </div>
       <div class="field">
         <label for="rxn-pagesize">Rows per page</label>
@@ -349,7 +357,7 @@ function renderRxnPanel() {
       <thead><tr>
         <th scope="col">Id</th><th scope="col">Name</th><th scope="col">Subsystem</th>
         <th scope="col">Equation</th><th scope="col">lb</th><th scope="col">ub</th>
-        <th scope="col">GPR</th><th scope="col">EC / cross-refs</th><th scope="col"></th>
+        <th scope="col">GPR (symbol + locus)</th><th scope="col">EC / cross-refs</th><th scope="col"></th>
       </tr></thead><tbody></tbody>
     </table></div>
     <div class="pager" style="margin-top:var(--s3)">
@@ -370,10 +378,12 @@ function renderRxnPanel() {
 function filteredRxns() {
   if (!rxnFilter) return gem.reactions;
   const q = rxnFilter.toLowerCase();
+  const gs = gem.gsym || {};
   return gem.reactions.filter(r =>
     r.id.toLowerCase().includes(q) || (r.name || '').toLowerCase().includes(q) ||
     (r.subsystem || '').toLowerCase().includes(q) || (r.gpr || '').toLowerCase().includes(q) ||
-    ((r.xr && r.xr.ec) || []).some(e => e.includes(q)));
+    ((r.xr && r.xr.ec) || []).some(e => e.includes(q)) ||
+    (r.genes || []).some(l => (gs[l] || '').toLowerCase().includes(q)));
 }
 
 function effBounds(r) {
@@ -427,7 +437,7 @@ function renderRxnTable() {
       <td class="eq">${esc(equation(r, b))}</td>
       <td><input class="bound" type="number" step="any" value="${b.lb}" aria-label="Lower bound of ${esc(r.id)}" data-kind="lb"></td>
       <td><input class="bound" type="number" step="any" value="${b.ub}" aria-label="Upper bound of ${esc(r.id)}" data-kind="ub"></td>
-      <td class="mono" style="max-width:220px;overflow-wrap:anywhere">${esc(r.gpr || '')}</td>
+      <td class="mono gprcell" style="max-width:260px;overflow-wrap:anywhere">${gprLabelHTML(gem, r.gpr)}</td>
       <td class="xr">${xrLinks(r)}</td>
       <td>${b.edited ? `<button class="btn small" type="button" data-reset="${esc(r.id)}">Reset</button>` : ''}</td>
     </tr>`;
@@ -458,14 +468,15 @@ function exportRxns(kind) {
     return {
       id: r.id, name: r.name || '', subsystem: r.subsystem || '', group: r.group || '',
       lb: b.lb, ub: b.ub, edited: b.edited, gpr: r.gpr || '',
+      genes_labeled: (r.genes || []).map(l => geneLabel(gem, l)).join(';'),
       ec: ((r.xr && r.xr.ec) || []).join(';'), equation: equation(r, b),
     };
   });
   const nEdits = rows.filter(r => r.edited).length;
   const stamp = `${acc} reactions: ${rows.length} of ${gem.reactions.length}` + (rxnFilter ? ` (filter: ${rxnFilter})` : '') + `; ${nEdits} edited bounds`;
   if (kind === 'csv') {
-    const head = 'id,name,subsystem,group,lb,ub,edited,gpr,ec,equation';
-    const csv = [`# ${stamp}`, head, ...rows.map(r => [r.id, r.name, r.subsystem, r.group, r.lb, r.ub, r.edited, r.gpr, r.ec, r.equation].map(csvEscape).join(','))].join('\n');
+    const head = 'id,name,subsystem,group,lb,ub,edited,gpr,genes_labeled,ec,equation';
+    const csv = [`# ${stamp}`, head, ...rows.map(r => [r.id, r.name, r.subsystem, r.group, r.lb, r.ub, r.edited, r.gpr, r.genes_labeled, r.ec, r.equation].map(csvEscape).join(','))].join('\n');
     downloadBlob(csv, `${acc}_reactions.csv`, 'text/csv');
   } else {
     downloadBlob(JSON.stringify({ note: stamp, reactions: rows }, null, 1), `${acc}_reactions.json`, 'application/json');
@@ -537,13 +548,15 @@ function renderMetTable() {
 function renderGenePanel() {
   const p = root.querySelector('#panel-genes');
   const nSeqs = (indexEntryFor(acc) || {}).n_seqs;
+  const nSym = Object.keys(gem.gsym || {}).length;
   p.innerHTML = `
-    <p class="count">${fmt.format(gem.genes.length)} genes in the model; nucleotide sequences available for
+    <p class="count">${fmt.format(gem.genes.length)} genes in the model; gene symbols for
+    ${fmt.format(nSym)} of ${fmt.format(gem.genes.length)} (the rest show locus tags); nucleotide sequences available for
     ${nSeqs === undefined ? 'not computed' : `${fmt.format(nSeqs)} of ${fmt.format(gem.genes.length)}`}.
     Sequences load on first view (about 1 MB).</p>
     <div class="field" style="max-width:340px">
-      <label for="gene-search">Filter genes by id</label>
-      <input type="search" id="gene-search" placeholder="e.g. PSEPUT">
+      <label for="gene-search">Filter genes (symbol or locus tag)</label>
+      <input type="search" id="gene-search" placeholder="e.g. eutG or PSEPUT">
     </div>
     <p class="count" id="gene-count" role="status" aria-live="polite"></p>
     <div class="genelist" id="gene-list"></div>
@@ -557,7 +570,10 @@ export function setIndexData(d) { indexCache = d; }
 function indexEntryFor(a) { return indexCache ? indexCache.gems.find(g => g.acc === a) : null; }
 
 function renderGeneList() {
-  const list = geneFilter ? gem.genes.filter(g => g.toLowerCase().includes(geneFilter)) : gem.genes;
+  const gs = gem.gsym || {};
+  const list = geneFilter
+    ? gem.genes.filter(g => g.toLowerCase().includes(geneFilter) || (gs[g] || '').toLowerCase().includes(geneFilter))
+    : gem.genes;
   const geneMax = 300;
   const slice = list.slice(0, geneMax);
   root.querySelector('#gene-count').textContent =
@@ -565,7 +581,8 @@ function renderGeneList() {
       ? `Showing ${fmt.format(slice.length)} of ${fmt.format(list.length)} matching genes; refine the filter to narrow further.`
       : `Showing ${fmt.format(list.length)} of ${fmt.format(gem.genes.length)} genes.`;
   const el = root.querySelector('#gene-list');
-  el.innerHTML = slice.map(g => `<button class="btn small" type="button" data-gene="${esc(g)}">${esc(g)}</button>`).join('');
+  el.innerHTML = slice.map(g => `<button class="btn small" type="button" data-gene="${esc(g)}"
+    title="${esc(gs[g] ? `${gs[g]} (${g})` : g)}">${gs[g] ? `<strong>${esc(gs[g])}</strong>&nbsp;· ` : ''}${esc(g)}</button>`).join('');
   el.querySelectorAll('button[data-gene]').forEach(b => b.addEventListener('click', () => showSeq(b.dataset.gene)));
 }
 
@@ -583,7 +600,7 @@ async function showSeq(geneId) {
     }
     const wrapped = seq.replace(/(.{60})/g, '$1\n');
     view.innerHTML = `
-      <h3 class="mono">${esc(geneId)} · ${fmt.format(seq.length)} nt</h3>
+      <h3>${geneLabelHTML(gem, geneId)} <span class="mono">· ${fmt.format(seq.length)} nt</span></h3>
       <pre>&gt;${esc(acc)}|${esc(geneId)} length=${seq.length}\n${wrapped}</pre>
       <button class="btn small" type="button" id="seq-copy">Copy FASTA</button>`;
     view.querySelector('#seq-copy').addEventListener('click', async () => {

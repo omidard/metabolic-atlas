@@ -88,6 +88,40 @@ export function listEdits(acc) {
 // ---- shared formatting helpers
 export const fmt = new Intl.NumberFormat('en-US');
 
+const escT = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+// ---- gene labels: the biological symbol leads, the locus tag stays visible.
+// gem.gsym maps locus_tag -> gene_symbol for the loci the annotation names;
+// a locus without a symbol renders as the locus alone, never a made-up name.
+export function geneLabel(gem, locus) {
+  const sym = gem && gem.gsym && gem.gsym[locus];
+  return sym ? `${sym} (${locus})` : locus;
+}
+
+export function geneLabelHTML(gem, locus) {
+  const sym = gem && gem.gsym && gem.gsym[locus];
+  return sym
+    ? `<strong>${escT(sym)}</strong> <span class="mono locus">(${escT(locus)})</span>`
+    : `<span class="mono">${escT(locus)}</span>`;
+}
+
+// A GPR string with each locus token labelled by its symbol; operators kept.
+export function gprLabelHTML(gem, gpr) {
+  if (!gpr) return '';
+  return escT(gpr).replace(/[^\s()]+/g, (tok) => {
+    if (tok === 'and' || tok === 'or' || tok === 'AND' || tok === 'OR') return tok;
+    const sym = gem && gem.gsym && gem.gsym[tok];
+    return sym ? `<strong>${escT(sym)}</strong>&nbsp;<span class="locus">(${tok})</span>` : tok;
+  });
+}
+
+// Raw BiGG subsystem strings ("S_Alternate_Carbon__Hydroxy_proline") cleaned
+// for display; the raw id stays in exports.
+export function subsystemLabel(raw) {
+  if (!raw) return '';
+  return String(raw).replace(/^S_/, '').replace(/__/g, ', ').replace(/_/g, ' ').trim();
+}
+
 export function n(x) {
   // absent renders as absent, never as a confident 0
   return (x === null || x === undefined) ? 'not computed' : fmt.format(x);

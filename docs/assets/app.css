@@ -47,6 +47,9 @@
 
 * { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; }
+/* the hidden attribute always wins, including over display'd components
+   (.btn is inline-flex, which otherwise overrides the UA [hidden] rule) */
+[hidden] { display: none !important; }
 body {
   margin: 0;
   background: var(--bg);
@@ -201,7 +204,7 @@ h3 { font-size: var(--t-m); margin: var(--s4) 0 var(--s2); }
 .btn[disabled] { opacity: 0.55; cursor: not-allowed; }
 
 /* ---------- split: map + results ---------- */
-.split { display: grid; grid-template-columns: minmax(0, 1fr) 430px; gap: var(--s4); margin-top: var(--s4); }
+.split { display: grid; grid-template-columns: minmax(0, 1fr) 470px; gap: var(--s4); margin-top: var(--s4); }
 @media (max-width: 1023px) { .split { grid-template-columns: 1fr; } }
 
 .map-pane { position: relative; min-height: 320px; height: clamp(320px, calc(100vh - 290px), 760px); background: var(--surface); border: 1px solid var(--line); border-radius: var(--r2); overflow: hidden; }
@@ -248,6 +251,27 @@ h3 { font-size: var(--t-m); margin: var(--s4) 0 var(--s2); }
 
 /* ---------- results panel ---------- */
 .results { display: flex; flex-direction: column; gap: var(--s3); min-width: 0; }
+.pathway-list { display: flex; flex-direction: column; gap: var(--s3); }
+
+/* interactive pathway-length histogram: each bar is a real button */
+.list-controls { padding: var(--s3) var(--s4); }
+.lenchart { display: flex; gap: var(--s1); align-items: flex-end; flex-wrap: wrap; }
+.lenbar {
+  display: flex; flex-direction: column; align-items: center; gap: 2px;
+  min-width: 34px; padding: var(--s1); cursor: pointer;
+  background: none; border: 1px solid transparent; border-radius: var(--r1);
+}
+.lenbar:hover { background: var(--surface-2); }
+.lenbar[aria-pressed="true"] { border-color: var(--accent-ink); background: var(--accent-wash); }
+.lencount { font-size: var(--t-xs); color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.lenstack { display: flex; flex-direction: column-reverse; justify-content: flex-start; width: 20px; height: 56px; }
+.lenseg { display: block; width: 100%; border-radius: 1px; }
+.lenlab { font-size: var(--t-xs); color: var(--ink); font-weight: 600; }
+.lenlegend { display: flex; gap: var(--s2) var(--s3); flex-wrap: wrap; align-items: baseline; margin-top: var(--s2); font-size: var(--t-xs); color: var(--ink); }
+.lennote { color: var(--ink-2); }
+.listbar { display: flex; gap: var(--s3); flex-wrap: wrap; align-items: flex-end; margin-top: var(--s3); }
+.feas-toggle { align-self: flex-end; }
+.feas-toggle input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--accent-ink); margin: 0; }
 .results-head { font-size: var(--t-m); }
 .results-head strong { font-size: var(--t-l); }
 .result-summary { border-left: 3px solid var(--accent); padding-left: var(--s3); }
@@ -264,9 +288,15 @@ h3 { font-size: var(--t-m); margin: var(--s4) 0 var(--s2); }
 .pcard > summary::-webkit-details-marker { display: none; }
 .pcard > summary:hover { background: var(--surface-2); }
 .pcard .rank { font-weight: 700; color: var(--accent-ink); font-size: var(--t-m); }
-.pcard .plen { font-size: var(--t-s); color: var(--ink-2); }
-.pcard .chain { font-family: var(--mono); font-size: var(--t-s); overflow-wrap: anywhere; width: 100%; }
-.pcard .carriers { font-size: var(--t-s); }
+.pcard .plen {
+  font-size: var(--t-xs); font-weight: 600; color: var(--ink-2);
+  border: 1px solid var(--line-strong); border-radius: 999px; padding: 0 var(--s2);
+}
+.pcard .chain { font-size: var(--t-s); overflow-wrap: anywhere; width: 100%; line-height: 1.6; }
+.pcard .chain .chain-end { font-weight: 700; color: var(--ink); }
+.pcard .chain .chain-mid { color: var(--ink-2); }
+.pcard .chain .chain-arrow { color: var(--line-strong); padding: 0 3px; }
+.pcard .carriers { font-size: var(--t-s); color: var(--ink-2); }
 .pcard-body { border-top: 1px solid var(--line); padding: var(--s3) var(--s4); display: flex; flex-direction: column; gap: var(--s3); }
 .step { border: 1px solid var(--line); border-radius: var(--r1); padding: var(--s2) var(--s3); }
 .step .step-mets { font-family: var(--mono); font-size: var(--t-s); }
@@ -274,6 +304,21 @@ h3 { font-size: var(--t-m); margin: var(--s4) 0 var(--s2); }
 .step .rxn-alt .rid { font-family: var(--mono); font-weight: 600; }
 .step .rxn-alt .ec { color: var(--ink-2); font-family: var(--mono); font-size: var(--t-xs); }
 .step .rxn-alt .rn { color: var(--ink-2); }
+.gem-slot { display: contents; }
+.rxn-genes { font-size: var(--t-s); color: var(--ink); }
+.rxn-genes strong, .gprcell strong, .genelist strong { font-style: italic; }
+.locus { font-family: var(--mono); font-size: var(--t-xs); color: var(--ink-2); font-weight: 400; }
+.rxn-eq { display: block; width: 100%; font-size: var(--t-xs); color: var(--ink-2); overflow-wrap: anywhere; margin-top: 2px; }
+.subchip {
+  display: inline-flex; align-items: center; font-size: var(--t-xs); color: var(--ink);
+  border: 1px solid var(--line); border-left: 4px solid var(--gc, var(--line-strong));
+  border-radius: var(--r1); padding: 0 var(--s2); background: var(--surface); white-space: nowrap;
+  min-height: 20px;
+}
+.pw-geminfo { display: flex; flex-direction: column; gap: var(--s2); }
+.pw-geminfo .termination { margin: 0; }
+.pw-subsys { display: flex; gap: var(--s1) var(--s2); flex-wrap: wrap; align-items: center; }
+.subsys-k { font-size: var(--t-xs); font-weight: 600; color: var(--ink-2); width: 100%; }
 .matrix { display: flex; flex-direction: column; gap: var(--s2); }
 .matrix .sprow { display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap; }
 .matrix .spname { font-size: var(--t-s); min-width: 150px; }
@@ -417,6 +462,13 @@ progress.an-progress { width: 100%; max-width: 420px; accent-color: var(--accent
 .stat-bullet { margin-top: var(--s2); display: flex; flex-direction: column; gap: 3px; }
 .stat-mean { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--ink); display: block; }
 .stat-delta { font-size: var(--t-xs); color: var(--ink-2); }
+.stat-hint { font-size: var(--t-xs); color: var(--ink-2); margin-top: var(--s1); line-height: 1.35; }
+.m2-deep { border-top: 1px dashed var(--line); }
+.core-label {
+  font-size: var(--t-s); font-weight: 700; color: var(--ink);
+  background: rgba(255,255,255,0.9); border: 1px solid var(--line-strong);
+  border-radius: var(--r1); padding: 0 var(--s2); white-space: nowrap;
+}
 
 /* ---------- Model stage dashboard ---------- */
 .dash-head { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: var(--s3); margin-top: var(--s3); }
