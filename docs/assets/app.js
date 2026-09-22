@@ -75,7 +75,7 @@ function metLabelHTML(mid) {
     if (!c.gem) { ctxGem = null; return; }
     try {
       const g = await loadGem(c.gem);
-      if (getContext().gem === c.gem) ctxGem = g;
+      if (getContext().gem === c.gem) { ctxGem = g; enrichOpenCards(); }
     } catch { ctxGem = null; }
   });
   // endpoints set elsewhere (the Engineer pickers) reflect back into the
@@ -638,19 +638,27 @@ function gemEquation(g, rid) {
   return `${lhs.join(' + ')} ${arrow} ${rhs.join(' + ')}`;
 }
 
-// GEM-specific annotation for one reaction row: genes as "symbol (locus)",
-// the equation and the raw subsystem, coloured by the reaction's group.
-function rxnGemDetailHTML(g, rid) {
+// Typeset equation for a reaction of the context GEM: reactants -> products
+// with a bounds-aware arrow, the step's own metabolites emphasised, currency
+// co-factors de-emphasised. The plain string (gemEquation) rides along as the
+// accessible name.
+function gemEquationHTML(g, rid, fromMid, toMid) {
   const r = g.reactions.find(x => x.id === rid);
-  if (!r) return `<span class="ec">not in ${esc(g.acc || getContext().gem || 'the chosen GEM')}</span>`;
-  const genes = (r.genes || []);
-  const geneHtml = genes.length
-    ? `<span class="rxn-genes">${genes.map(l => geneLabelHTML(g, l)).join(', ')}</span>`
-    : '<span class="ec">no gene rule</span>';
-  const sub = r.subsystem
-    ? `<span class="subchip" style="--gc:${GROUP_COLORS[r.group] || '#98948C'}">${esc(subsystemLabel(r.subsystem))}</span>` : '';
-  const eq = gemEquation(g, rid);
-  return `${geneHtml} ${sub}${eq ? `<span class="rxn-eq mono">${esc(eq)}</span>` : ''}`;
+  if (!r) return '';
+  const term = (m, c) => {
+    const coef = Math.abs(c) === 1 ? '' : `<span class="eq-coef">${Math.round(Math.abs(c) * 1e4) / 1e4}</span> `;
+    const cur = !!(GRAPH && GRAPH.metabolites[m] && GRAPH.metabolites[m].cur);
+    const main = m === fromMid || m === toMid;
+    const nm = metName(m);
+    return `<span class="eq-term${main ? ' eq-main' : cur ? ' eq-cur' : ''}" title="${esc(nm ? `${nm} (${m})` : m)}">${coef}${esc(m)}</span>`;
+  };
+  const lhs = [], rhs = [];
+  for (const [m, c] of Object.entries(r.stoich)) (c < 0 ? lhs : rhs).push(term(m, c));
+  const arrow = (r.lb < 0 && r.ub > 0) ? '⇌' : (r.ub <= 0 && r.lb < 0) ? '←' : '→';
+  const plain = gemEquation(g, rid);
+  return `<span class="eq-side">${lhs.join('<span class="eq-plus" aria-hidden="true">+</span>')}</span>` +
+    `<span class="eq-arrow" aria-label="${esc(plain || '')}">${arrow}</span>` +
+    `<span class="eq-side">${rhs.join('<span class="eq-plus" aria-hidden="true">+</span>')}</span>`;
 }
 
 // Subsystem span of a pathway in the context GEM: which subsystems its
@@ -673,6 +681,32 @@ function subsystemSummaryHTML(g, pw) {
   return `<div class="pw-subsys">
     <span class="subsys-k">Subsystems spanned (${counts.size}, over ${carried} of ${totalAlts} candidate reactions in <span class="mono">${esc(getContext().gem)}</span>):</span>
     ${chips}
+  </div>`;
+}
+
+// Default header facts for the Simulate columns of a card: honest absence
+// until a run covers the pathway. mode2 overwrites them; a cleared run
+// restores them (onSearchUpdate 'cleared').
+const SIM_FACT_DEFAULTS = {
+  feas: '<span class="fact-na">not tested; run Simulate (stage 3)</span>',
+  flux: '<span class="fact-na">not computed</span>',
+  yield: '<span class="fact-na">not computed</span>',
+};
+
+function resetSimFacts() {
+  document.querySelectorAll('#results-body .pcard .pwh-facts [data-pwh]').forEach(el => {
+    const dd = el.querySelector('dd');
+    if (dd) dd.innerHTML = SIM_FACT_DEFAULTS[el.dataset.pwh] || '<span class="fact-na">not computed</span>';
+  });
+}
+
+// One metabolite node on the flow rail.
+function flowNodeHTML(mid, isEnd) {
+  const nm = metName(mid);
+  return `<div class="flow-node${isEnd ? ' flow-end' : ''}">
+    <span class="fn-dot" aria-hidden="true"></span>
+    <span class="fn-name">${esc(nm || mid)}</span>
+    ${nm ? `<span class="fn-id mono">${esc(mid)}</span>` : ''}
   </div>`;
 }
 
@@ -711,37 +745,84 @@ function pathwayCard(pw, idx) {
     if (d.open) enrichCard(d, pw);
   });
 
-  const stepsEl = document.createElement('div');
-  stepsEl.className = 'pw-steps';
+  // ---- header: route pills, facts with denominators, pathway-group key
+  const header = document.createElement('header');
+  header.className = 'pw-header';
+  const routeHtml = chainMids.map((m, i) => {
+    const nm = metName(m);
+    const end = i === 0 || i === chainMids.length - 1;
+    return `<span class="route-pill${end ? ' route-end' : ''}" title="${esc(m)}">${esc(nm || m)}</span>`;
+  }).join('<span class="route-sep" aria-hidden="true">→</span>');
+  const groupCounts = new Map();     // union pathway group -> candidate reaction count
+  let nCand = 0;
+  for (const st of pw.steps) for (const r of st.rxns) {
+    nCand++;
+    groupCounts.set(r.group, (groupCounts.get(r.group) || 0) + 1);
+  }
+  const groupKey = [...groupCounts.entries()].sort((a, b) => b[1] - a[1]).map(([g, n]) =>
+    `<span class="gkey"><span class="gdot" style="background:${GROUP_COLORS[g] || '#98948C'}"></span>${esc(g)} · ${n}</span>`).join('');
+  header.innerHTML = `
+    <div class="pwh-route">${routeHtml}</div>
+    <dl class="pwh-facts">
+      <div class="pwh-fact"><dt>Length</dt><dd>${pw.len} step${pw.len > 1 ? 's' : ''}</dd></div>
+      <div class="pwh-fact"><dt>Carried end-to-end</dt><dd>${pw.carriers} of ${nGems} GEMs</dd></div>
+      <div class="pwh-fact" data-pwh="feas"><dt>Feasibility</dt><dd>${SIM_FACT_DEFAULTS.feas}</dd></div>
+      <div class="pwh-fact" data-pwh="flux"><dt>Max product flux</dt><dd>${SIM_FACT_DEFAULTS.flux}</dd></div>
+      <div class="pwh-fact" data-pwh="yield"><dt>Yield</dt><dd>${SIM_FACT_DEFAULTS.yield}</dd></div>
+    </dl>
+    <div class="pwh-keys">
+      <span class="pwh-keyk">Pathway groups (${groupCounts.size}, over ${nCand} candidate reaction${nCand > 1 ? 's' : ''}):</span>
+      ${groupKey}
+    </div>
+    <div class="pw-geminfo"><p class="termination">Choose a GEM (Model or Simulate stage) to see each reaction's genes, equation and subsystem in that strain.</p></div>`;
+  bodyEl.appendChild(header);
+
+  // ---- step flow: metabolite nodes on a rail, one designed card per step
+  const flow = document.createElement('div');
+  flow.className = 'pw-flow';
+  const altMax = 6;
+  let flowHtml = '';
   pw.steps.forEach((st, i) => {
-    const altMax = 6;
+    flowHtml += flowNodeHTML(st.from, i === 0);
     const shown = st.rxns.slice(0, altMax);
-    const stepDiv = document.createElement('div');
-    stepDiv.className = 'step';
-    stepDiv.dataset.step = i;
-    const fromNm = metName(st.from), toNm = metName(st.to);
-    stepDiv.innerHTML = `<div class="step-mets">Step ${i + 1}: ${fromNm ? esc(fromNm) + ' ' : ''}<span class="mono">${esc(st.from)}</span> → ${toNm ? esc(toNm) + ' ' : ''}<span class="mono">${esc(st.to)}</span></div>` +
-      shown.map(r => `
-        <div class="rxn-alt" data-rxn="${esc(r.id)}">
-          <button class="rid btn small" type="button" data-rid="${esc(r.id)}" title="Open in the Model stage">${esc(r.id)}</button>
-          ${r.dir === 'rev' ? '<span class="ec">(reverse of written direction)</span>' : ''}
-          ${r.ec.length ? `<span class="ec">EC ${esc(r.ec.join(', '))}</span>` : ''}
-          <span class="rn">${esc(r.name || '')}</span>
-          <span class="gem-slot"></span>
-          <span class="flux-slot"></span>
-        </div>`).join('') +
-      (st.rxns.length > altMax ? `<p class="termination">Showing ${altMax} of ${st.rxns.length} alternative reactions for this step.</p>` : '');
-    stepsEl.appendChild(stepDiv);
+    // step accent: the group colour when every shown candidate agrees, else neutral
+    const stepGroups = new Set(shown.map(r => r.group));
+    const sg = stepGroups.size === 1 ? (GROUP_COLORS[shown[0].group] || 'var(--line-strong)') : 'var(--line-strong)';
+    const rows = shown.map(r => `
+      <div class="fs-rxn rxn-alt" data-rxn="${esc(r.id)}" data-from="${esc(st.from)}" data-to="${esc(st.to)}">
+        <div class="fs-info">
+          <div class="fs-enzyme"><span class="gs-genes"></span></div>
+          <div class="fs-idline">
+            <button class="rid-btn" type="button" data-rid="${esc(r.id)}" title="Open ${esc(r.id)} in the Model stage">${esc(r.id)}</button>
+            ${r.name && r.name !== r.id ? `<span class="fs-rname">${esc(r.name)}</span>` : ''}
+          </div>
+          <div class="fs-tags">
+            <span class="subchip" style="--gc:${GROUP_COLORS[r.group] || '#98948C'}">${esc(r.group)}</span>
+            <span class="gs-sub"></span>
+            ${r.ec.length ? `<span class="fs-ec">EC ${esc(r.ec.join(', '))}</span>` : ''}
+            ${r.dir === 'rev' ? '<span class="fs-dir">runs reverse of written direction</span>' : ''}
+          </div>
+          <div class="fs-eq gs-eq"></div>
+        </div>
+        <div class="fs-flux"><div class="flux-slot"></div></div>
+      </div>`).join('');
+    flowHtml += `
+      <article class="flow-step" data-step="${i}" style="--sg:${sg}" aria-label="Step ${i + 1} of ${pw.len}: ${esc(metName(st.from) || st.from)} to ${esc(metName(st.to) || st.to)}">
+        <div class="fs-head">
+          <span class="fs-no">Step ${i + 1} of ${pw.len}</span>
+          ${st.rxns.length > 1 ? `<span class="fs-altnote">any 1 of ${st.rxns.length} candidate reactions carries this step</span>` : ''}
+        </div>
+        <div class="fs-rxns">${rows}</div>
+        ${st.rxns.length > altMax ? `<p class="termination">Showing ${altMax} of ${st.rxns.length} candidate reactions for this step.</p>` : ''}
+      </article>`;
   });
-  bodyEl.appendChild(stepsEl);
+  flowHtml += flowNodeHTML(pw.mets[pw.mets.length - 1], true);
+  flow.innerHTML = flowHtml;
+  bodyEl.appendChild(flow);
 
-  // GEM-specific annotation slot (genes, equations, subsystem span)
-  const gemInfo = document.createElement('div');
-  gemInfo.className = 'pw-geminfo';
-  gemInfo.innerHTML = '<p class="termination">Choose a GEM (Model or Simulate stage) to see each reaction\'s genes, equation and subsystem in that strain.</p>';
-  bodyEl.appendChild(gemInfo);
-
-  // presence matrix
+  // ---- side column: strain presence per species
+  const side = document.createElement('aside');
+  side.className = 'pw-side';
   const matrix = document.createElement('div');
   matrix.className = 'matrix';
   const bySp = carriersBySpecies(pw.mask, META);
@@ -756,11 +837,14 @@ function pathwayCard(pw, idx) {
           title="${esc(c.acc)}: ${c.on ? 'carries every step' : 'missing at least one step'}"></span>`).join('')}</span>`;
     matrix.appendChild(row);
   }
+  const sideH = document.createElement('h3');
+  sideH.className = 'side-h';
+  sideH.textContent = `Strain presence (${pw.carriers} of ${nGems} GEMs carry every step)`;
   const note = document.createElement('p');
   note.className = 'termination';
   note.textContent = 'A filled cell means the strain’s GEM contains at least one reaction for every step. Whether the strain’s own bounds and a medium permit flux through every step is a Simulate check.';
-  matrix.appendChild(note);
-  bodyEl.appendChild(matrix);
+  side.append(sideH, matrix, note);
+  bodyEl.appendChild(side);
 
   // Feasibility detail slot (filled by the Simulate stage when a run covers this card)
   const m2slot = document.createElement('div');
@@ -770,6 +854,10 @@ function pathwayCard(pw, idx) {
   // actions
   const actions = document.createElement('div');
   actions.className = 'cardactions';
+  const actK = document.createElement('span');
+  actK.className = 'actions-k';
+  actK.textContent = 'This pathway:';
+  actions.appendChild(actK);
   const btnMap = document.createElement('button');
   btnMap.className = 'btn small'; btnMap.type = 'button';
   btnMap.textContent = map ? 'Show on 3D map' : '3D map unavailable';
@@ -788,11 +876,22 @@ function pathwayCard(pw, idx) {
   actions.append(btnMap, btnCsv, btnJson);
   bodyEl.appendChild(actions);
 
-  bodyEl.querySelectorAll('button.rid').forEach(b => b.addEventListener('click', () => {
+  bodyEl.querySelectorAll('button.rid-btn').forEach(b => b.addEventListener('click', () => {
     openReactionInBrowser(b.dataset.rid);
     location.hash = '#/model';
   }));
   return d;
+}
+
+// Cards already open when a context GEM lands (chosen in Model or Simulate
+// after expanding) get their gene / equation / subsystem slots filled without
+// needing a close-and-reopen.
+function enrichOpenCards() {
+  if (!lastResults) return;
+  document.querySelectorAll('#results-body .pcard[open]').forEach(d => {
+    const pw = lastResults.res.pathways[+d.dataset.pwIdx];
+    if (pw) enrichCard(d, pw);
+  });
 }
 
 // Fill a card's per-reaction gene / equation / subsystem slots from the
@@ -808,8 +907,30 @@ async function enrichCard(d, pw) {
   }
   d.dataset.enrichedAcc = acc;
   d.querySelectorAll('.rxn-alt').forEach(row => {
-    const slot = row.querySelector('.gem-slot');
-    if (slot) slot.innerHTML = rxnGemDetailHTML(ctxGem, row.dataset.rxn);
+    const rid = row.dataset.rxn;
+    const genesEl = row.querySelector('.gs-genes');
+    const subEl = row.querySelector('.gs-sub');
+    const eqEl = row.querySelector('.gs-eq');
+    if (!genesEl || !subEl || !eqEl) return;
+    const r = ctxGem.reactions.find(x => x.id === rid);
+    if (!r) {
+      row.classList.add('rxn-absent');
+      genesEl.innerHTML = '';
+      subEl.innerHTML = `<span class="absent-tag">not in ${esc(acc)}</span>`;
+      eqEl.innerHTML = '';
+      return;
+    }
+    row.classList.remove('rxn-absent');
+    const genes = (r.genes || []);
+    genesEl.innerHTML = genes.length
+      ? genes.map(l => geneLabelHTML(ctxGem, l)).join('<span class="gsep" aria-hidden="true">·</span>')
+      : `<span class="no-gene">no gene rule in ${esc(acc)}</span>`;
+    // the GEM's raw subsystem, unless it only repeats the union group chip
+    const subLabel = r.subsystem ? subsystemLabel(r.subsystem) : '';
+    const groupChipText = row.querySelector('.fs-tags .subchip');
+    subEl.innerHTML = (subLabel && !(groupChipText && groupChipText.textContent.trim() === subLabel))
+      ? `<span class="subchip" style="--gc:${GROUP_COLORS[r.group] || '#98948C'}">${esc(subLabel)}</span>` : '';
+    eqEl.innerHTML = gemEquationHTML(ctxGem, rid, row.dataset.from, row.dataset.to);
   });
   const gemInfo = d.querySelector('.pw-geminfo');
   if (gemInfo) gemInfo.innerHTML = subsystemSummaryHTML(ctxGem, pw) ||
@@ -1019,6 +1140,7 @@ function onSearchUpdate(phase) {
     if (map) { map.clearFluxEdges(); }
     fluxLayerOn = false;
     if (lastResults) { renderListControls(); }
+    resetSimFacts();
     updateSearchLegend(null);
     return;
   }

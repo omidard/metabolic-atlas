@@ -332,6 +332,42 @@ export function fvaSamplingRows(rows, { width = 380, unit = 'mmol gDW-1 h-1', co
   </svg>`;
 }
 
+// ---- per-reaction flux mini: FVA envelope lane over sampling lane, one
+// shared [lo, hi] axis passed in by the caller so every mini of a pathway is
+// directly comparable. fva {min, max} | null, s {min, p5, median, p95, max}
+// | null, pfba number | null. A null lane prints "not computed", never a
+// zero-width bar.
+export function fluxMini(fva, s, pfba, { lo = 0, hi = 1, width = 240, unit = 'mmol gDW-1 h-1', envColor = '#6A7077' } = {}) {
+  const H = 64, mL = 4, mR = 4;
+  const iw = width - mL - mR;
+  const X = (v) => mL + (v - lo) / (hi - lo || 1) * iw;
+  const yF = 13, yS = 33, yAx = 48;
+  const ticks = niceTicks(lo, hi, 3);
+  const aria = `FVA range ${fva && fva.min != null ? `${fluxNum(fva.min)} to ${fluxNum(fva.max)}` : 'not computed'}; ` +
+    `sampled median ${s ? fluxNum(s.median) : 'not computed'}` +
+    (s ? `, 5th to 95th percentile ${fluxNum(s.p5)} to ${fluxNum(s.p95)}, minimum ${fluxNum(s.min)}, maximum ${fluxNum(s.max)}` : '') +
+    `; pFBA flux ${pfba != null ? fluxNum(pfba) : 'not computed'}; ${unit}`;
+  const fvaEl = (fva && fva.min != null && fva.max != null)
+    ? `<rect x="${X(fva.min).toFixed(1)}" y="${yF - 6}" width="${Math.max(X(fva.max) - X(fva.min), 1.5).toFixed(1)}" height="12" rx="2"
+         fill="none" stroke="${envColor}" stroke-width="1.5"/>`
+    : `<text x="${mL}" y="${yF + 4}" class="ch-svg-dim">FVA not computed</text>`;
+  const pfbaEl = pfba != null
+    ? `<circle cx="${X(pfba).toFixed(1)}" cy="${yF}" r="3.5" fill="var(--accent-ink)"/>` : '';
+  const sEl = s
+    ? `<line x1="${X(s.min).toFixed(1)}" x2="${X(s.max).toFixed(1)}" y1="${yS}" y2="${yS}" stroke="var(--line-strong)" stroke-width="1"/>
+       <rect x="${X(s.p5).toFixed(1)}" y="${yS - 5}" width="${Math.max(X(s.p95) - X(s.p5), 1.5).toFixed(1)}" height="10" rx="2" fill="var(--accent)" fill-opacity="0.8"/>
+       <line x1="${X(s.median).toFixed(1)}" x2="${X(s.median).toFixed(1)}" y1="${yS - 7}" y2="${yS + 7}" stroke="var(--ink)" stroke-width="2"/>`
+    : `<text x="${mL}" y="${yS + 4}" class="ch-svg-dim">sampling not computed</text>`;
+  const tickX = (t) => Math.min(Math.max(X(t), 12), width - 12).toFixed(1);
+  return `<svg width="${width}" height="${H}" class="fluxmini" role="img" aria-label="${esc(aria)}">
+    ${lo < 0 && hi > 0 ? `<line x1="${X(0).toFixed(1)}" x2="${X(0).toFixed(1)}" y1="4" y2="${yAx}" stroke="var(--line-strong)"/>` : ''}
+    ${fvaEl}${pfbaEl}${sEl}
+    <line x1="${mL}" x2="${width - mR}" y1="${yAx}" y2="${yAx}" stroke="var(--line)"/>
+    ${ticks.map(t => `<line x1="${X(t).toFixed(1)}" x2="${X(t).toFixed(1)}" y1="${yAx}" y2="${yAx + 3}" stroke="var(--line-strong)"/>
+      <text x="${tickX(t)}" y="${H - 3}" text-anchor="middle" class="ch-svg-dim">${tickLabel(t)}</text>`).join('')}
+  </svg>`;
+}
+
 export function fluxNum(v) {
   if (v == null) return 'nc';
   const a = Math.abs(v);

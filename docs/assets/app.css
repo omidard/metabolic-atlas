@@ -359,47 +359,160 @@ h3 { font-size: var(--t-m); margin: var(--s4) 0 var(--s2); }
   .pcard .feas-slot { justify-self: auto; }
   .pcard-marker { margin-left: auto; }
 }
-.pcard-body { border-top: 1px solid var(--line); padding: var(--s3) var(--s4); display: flex; flex-direction: column; gap: var(--s3); }
+.pcard-body { border-top: 1px solid var(--line); padding: var(--s4); display: flex; flex-direction: column; gap: var(--s5); }
 @media (min-width: 1024px) {
   .pcard-body {
-    display: grid; gap: var(--s4);
-    grid-template-columns: minmax(0, 1.15fr) minmax(300px, 0.85fr);
+    display: grid; gap: var(--s5) var(--s6);
+    grid-template-columns: minmax(0, 1.45fr) minmax(280px, 0.55fr);
     grid-template-areas:
-      "steps geminfo"
-      "steps matrix"
+      "header header"
+      "flow side"
       "mode2 mode2"
       "actions actions";
     align-items: start;
   }
-  .pcard-body > .pw-steps { grid-area: steps; }
-  .pcard-body > .pw-geminfo { grid-area: geminfo; }
-  .pcard-body > .matrix { grid-area: matrix; }
+  .pcard-body > .pw-header { grid-area: header; }
+  .pcard-body > .pw-flow { grid-area: flow; }
+  .pcard-body > .pw-side { grid-area: side; }
   .pcard-body > .mode2-slot { grid-area: mode2; }
   .pcard-body > .cardactions { grid-area: actions; }
 }
 .pcard-body > .mode2-slot:empty { display: none; }
-.pw-steps { display: flex; flex-direction: column; gap: var(--s2); min-width: 0; }
-.step { border: 1px solid var(--line); border-radius: var(--r1); padding: var(--s2) var(--s3); }
-.step .step-mets { font-family: var(--mono); font-size: var(--t-s); }
-.step .rxn-alt { margin-top: var(--s1); font-size: var(--t-s); display: flex; flex-wrap: wrap; gap: var(--s1) var(--s2); align-items: baseline; }
-.step .rxn-alt .rid { font-family: var(--mono); font-weight: 600; }
-.step .rxn-alt .ec { color: var(--ink-2); font-family: var(--mono); font-size: var(--t-xs); }
-.step .rxn-alt .rn { color: var(--ink-2); }
-.gem-slot { display: contents; }
-.rxn-genes { font-size: var(--t-s); color: var(--ink); }
-.rxn-genes strong, .gprcell strong, .genelist strong { font-style: italic; }
-.locus { font-family: var(--mono); font-size: var(--t-xs); color: var(--ink-2); font-weight: 400; }
-.rxn-eq { display: block; width: 100%; font-size: var(--t-xs); color: var(--ink-2); overflow-wrap: anywhere; margin-top: 2px; }
+
+/* ---- expanded panel: pathway header (route, facts, keys) ---- */
+.pw-header { display: flex; flex-direction: column; gap: var(--s3); min-width: 0; }
+.pwh-route { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s1) 0; }
+.route-pill {
+  display: inline-block; padding: 2px var(--s3); border-radius: 999px;
+  background: var(--surface-2); color: var(--ink-2); font-size: var(--t-s);
+  max-width: 34ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.route-pill.route-end {
+  background: var(--accent-wash); color: var(--ink); font-weight: 600; font-size: var(--t-m);
+  border: 1px solid var(--accent-ink);
+}
+.route-sep { color: var(--line-strong); padding: 0 var(--s2); flex: none; }
+.pwh-facts {
+  display: flex; flex-wrap: wrap; gap: var(--s3) var(--s6);
+  margin: 0; padding: var(--s3) 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line);
+}
+.pwh-fact { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.pwh-fact dt { font-size: var(--t-xs); font-weight: 600; color: var(--ink-2); letter-spacing: 0.02em; }
+.pwh-fact dd { margin: 0; font-size: var(--t-m); color: var(--ink); font-variant-numeric: tabular-nums; }
+.pwh-fact dd strong { font-size: var(--t-l); font-weight: 700; }
+.fact-na { color: var(--ink-2); font-style: italic; font-size: var(--t-s); }
+.fact-note { display: block; font-size: var(--t-xs); color: var(--ink-2); font-style: normal; max-width: 44ch; }
+.pwh-keys { display: flex; flex-wrap: wrap; gap: var(--s1) var(--s3); align-items: center; font-size: var(--t-xs); color: var(--ink); }
+.pwh-keyk { font-weight: 600; color: var(--ink-2); }
+.gkey { display: inline-flex; align-items: center; gap: 5px; }
+.gkey .gdot { width: 10px; height: 10px; border-radius: 2px; display: inline-block; flex: none; }
+.pw-geminfo { display: flex; flex-direction: column; gap: var(--s2); }
+.pw-geminfo .termination { margin: 0; }
+.pw-subsys { display: flex; gap: var(--s1) var(--s2); flex-wrap: wrap; align-items: center; }
+.subsys-k { font-size: var(--t-xs); font-weight: 600; color: var(--ink-2); width: 100%; }
+
+/* ---- expanded panel: step flow with rail ---- */
+.pw-flow { display: flex; flex-direction: column; min-width: 0; }
+.flow-node {
+  position: relative; display: flex; align-items: baseline; gap: var(--s2);
+  padding-left: 26px; min-width: 0; flex-wrap: wrap;
+}
+.flow-node .fn-dot {
+  position: absolute; left: 3px; top: 50%; transform: translateY(-50%);
+  width: 11px; height: 11px; border-radius: 50%;
+  background: var(--surface); border: 2px solid var(--line-strong);
+}
+.flow-node.flow-end .fn-dot { background: var(--accent-ink); border-color: var(--accent-ink); }
+.flow-node .fn-name { font-size: var(--t-m); font-weight: 600; color: var(--ink); }
+.flow-node.flow-end .fn-name { font-size: var(--t-l); }
+.flow-node .fn-id { font-size: var(--t-s); color: var(--ink-2); }
+.flow-step {
+  position: relative; margin: var(--s2) 0 var(--s2) 8px; padding: var(--s3) var(--s4);
+  border: 1px solid var(--line); border-left: 4px solid var(--sg, var(--line-strong));
+  border-radius: var(--r1); background: var(--surface);
+}
+.flow-step::before, .flow-step::after {
+  content: ""; position: absolute; left: -8px; width: 2px; height: var(--s2);
+  background: var(--line-strong);
+}
+.flow-step::before { top: calc(-1 * var(--s2) - 1px); }
+.flow-step::after { bottom: calc(-1 * var(--s2) - 1px); }
+.fs-head { display: flex; flex-wrap: wrap; gap: var(--s1) var(--s3); align-items: baseline; margin-bottom: var(--s2); }
+.fs-no { font-size: var(--t-xs); font-weight: 700; color: var(--ink-2); text-transform: uppercase; letter-spacing: 0.04em; }
+.fs-altnote { font-size: var(--t-xs); color: var(--ink-2); }
+.fs-rxns { display: flex; flex-direction: column; }
+.fs-rxn { display: flex; gap: var(--s2) var(--s4); align-items: flex-start; padding: var(--s2) 0; min-width: 0; }
+.fs-rxn + .fs-rxn { border-top: 1px dashed var(--line); }
+.fs-info { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: var(--s1); }
+.fs-enzyme { font-size: var(--t-m); color: var(--ink); }
+.fs-enzyme:empty { display: none; }
+.fs-enzyme strong { font-style: italic; font-size: var(--t-l); }
+.fs-enzyme .gsep { color: var(--line-strong); padding: 0 var(--s1); }
+.fs-enzyme .no-gene { font-size: var(--t-s); color: var(--ink-2); font-style: italic; }
+.fs-idline { display: flex; flex-wrap: wrap; gap: var(--s1) var(--s2); align-items: baseline; }
+.rid-btn {
+  font-family: var(--mono); font-size: var(--t-s); font-weight: 600;
+  background: none; border: none; padding: 0; cursor: pointer;
+  color: var(--accent-ink); text-decoration: underline dotted; text-underline-offset: 3px;
+  min-height: 24px;
+}
+.rid-btn:hover { text-decoration-style: solid; }
+.fs-rname { font-size: var(--t-s); color: var(--ink-2); }
+.fs-tags { display: flex; flex-wrap: wrap; gap: var(--s1) var(--s2); align-items: center; }
+.fs-tags:empty { display: none; }
+.fs-ec { font-size: var(--t-xs); color: var(--ink-2); font-family: var(--mono); }
+.fs-dir {
+  font-size: var(--t-xs); color: var(--warn-ink); border: 1px solid var(--warn-ink);
+  border-radius: 999px; padding: 0 var(--s2); white-space: nowrap;
+}
 .subchip {
   display: inline-flex; align-items: center; font-size: var(--t-xs); color: var(--ink);
   border: 1px solid var(--line); border-left: 4px solid var(--gc, var(--line-strong));
   border-radius: var(--r1); padding: 0 var(--s2); background: var(--surface); white-space: nowrap;
   min-height: 20px;
 }
-.pw-geminfo { display: flex; flex-direction: column; gap: var(--s2); }
-.pw-geminfo .termination { margin: 0; }
-.pw-subsys { display: flex; gap: var(--s1) var(--s2); flex-wrap: wrap; align-items: center; }
-.subsys-k { font-size: var(--t-xs); font-weight: 600; color: var(--ink-2); width: 100%; }
+.gs-sub:empty, .gs-eq:empty { display: none; }
+.rxn-absent .fs-idline, .rxn-absent .fs-tags, .rxn-absent .fs-eq { opacity: 0.6; }
+.absent-tag { font-size: var(--t-xs); color: var(--ink-2); border: 1px dashed var(--line-strong); border-radius: 999px; padding: 0 var(--s2); white-space: nowrap; }
+
+/* typeset equation: reactants -> products; step metabolites lead, currency recedes */
+.fs-eq {
+  display: flex; flex-wrap: wrap; gap: 2px var(--s1); align-items: baseline;
+  font-family: var(--mono); font-size: var(--t-s); line-height: 1.6;
+}
+.eq-side { display: contents; }
+.eq-term { color: var(--ink-2); white-space: nowrap; }
+.eq-term .eq-coef { color: var(--ink-2); }
+.eq-term.eq-main { color: var(--ink); font-weight: 700; }
+.eq-term.eq-cur { color: var(--ink-2); font-size: var(--t-xs); opacity: 0.85; }
+.eq-plus { color: var(--line-strong); padding: 0 2px; }
+.eq-arrow { color: var(--accent-ink); font-weight: 700; padding: 0 var(--s1); }
+
+/* per-reaction flux panel (Simulate results); hidden until a run fills it */
+.fs-flux { flex: 0 0 250px; max-width: 250px; min-width: 0; }
+.fs-flux:not(:has(.flux-slot:not(:empty))) { display: none; }
+.flux-slot { display: flex; flex-direction: column; gap: 2px; }
+.fluxnums { display: flex; flex-wrap: wrap; gap: 2px var(--s2); font-size: var(--t-xs); font-variant-numeric: tabular-nums; color: var(--ink); }
+.fluxnums .fn-u { color: var(--ink-2); }
+.fluxnums .fn-p { color: var(--accent-ink); font-weight: 600; }
+.fluxna { font-size: var(--t-xs); color: var(--ink-2); font-style: italic; }
+.limit-tag {
+  align-self: flex-start; font-size: var(--t-xs); font-weight: 600; color: var(--warn-ink);
+  border: 1px solid var(--warn-ink); border-radius: 999px; padding: 0 var(--s2); white-space: nowrap;
+}
+@media (max-width: 719px) {
+  .fs-rxn { flex-direction: column; }
+  .fs-flux { flex: 1 1 auto; max-width: 100%; }
+}
+
+/* legacy gene-label helpers shared with the GEM browser */
+.rxn-genes { font-size: var(--t-s); color: var(--ink); }
+.rxn-genes strong, .gprcell strong, .genelist strong { font-style: italic; }
+.locus { font-family: var(--mono); font-size: var(--t-xs); color: var(--ink-2); font-weight: 400; }
+
+/* ---- expanded panel: side column (strain presence) ---- */
+.pw-side { display: flex; flex-direction: column; gap: var(--s3); min-width: 0; }
+.pw-side .side-h { margin: 0; font-size: var(--t-s); font-weight: 600; color: var(--ink); }
 .matrix { display: flex; flex-direction: column; gap: var(--s2); }
 .matrix .sprow { display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap; }
 .matrix .spname { font-size: var(--t-s); min-width: 150px; }
@@ -408,7 +521,17 @@ h3 { font-size: var(--t-m); margin: var(--s4) 0 var(--s2); }
 .matrix .cell { width: 14px; height: 14px; border-radius: 3px; border: 1px solid var(--line-strong); }
 .matrix .cell.on { border-color: transparent; }
 .matrix .cell.off { background: var(--surface-2); }
-.cardactions { display: flex; gap: var(--s2); flex-wrap: wrap; }
+.cardactions { display: flex; gap: var(--s2); flex-wrap: wrap; align-items: center; border-top: 1px solid var(--line); padding-top: var(--s3); }
+.cardactions .actions-k { font-size: var(--t-xs); font-weight: 600; color: var(--ink-2); margin-right: var(--s1); }
+
+/* Simulate detail region inside the panel */
+.m2-deepinfo { display: flex; flex-direction: column; gap: var(--s2); }
+.m2-legend { display: flex; flex-wrap: wrap; gap: var(--s1) var(--s3); font-size: var(--t-xs); color: var(--ink-2); }
+.m2-legend .lgi { display: inline-flex; align-items: center; gap: 5px; }
+.m2-legend .lg-env { width: 16px; height: 9px; border: 1.5px solid #6A7077; border-radius: 2px; display: inline-block; }
+.m2-legend .lg-band { width: 16px; height: 9px; background: var(--accent); opacity: 0.8; border-radius: 2px; display: inline-block; }
+.m2-legend .lg-med { width: 2px; height: 12px; background: var(--ink); display: inline-block; }
+.m2-legend .lg-pfba { width: 8px; height: 8px; border-radius: 50%; background: var(--accent-ink); display: inline-block; }
 
 /* ---------- GEM browser ---------- */
 .gem-toolbar { display: flex; gap: var(--s3); flex-wrap: wrap; align-items: flex-end; }
@@ -475,8 +598,6 @@ tr.m2-unknown td { color: var(--ink-2); }
 .feas-chip.wait { color: var(--ink-2); border-style: dashed; }
 .m2-detail { display: flex; gap: var(--s2) var(--s3); align-items: center; flex-wrap: wrap; border-top: 1px dashed var(--line); padding-top: var(--s2); }
 .mode2-status { margin-top: var(--s2); }
-.fluxval { font-family: var(--mono); font-size: var(--t-xs); color: var(--accent-ink); font-weight: 600; }
-.fluxval.na { color: var(--ink-2); font-weight: 400; }
 
 /* ---------- analysis view ---------- */
 .an-section { margin-top: var(--s4); }
@@ -544,7 +665,6 @@ progress.an-progress { width: 100%; max-width: 420px; accent-color: var(--accent
 .stat-mean { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--ink); display: block; }
 .stat-delta { font-size: var(--t-xs); color: var(--ink-2); }
 .stat-hint { font-size: var(--t-xs); color: var(--ink-2); margin-top: var(--s1); line-height: 1.35; }
-.m2-deep { border-top: 1px dashed var(--line); }
 .core-label {
   font-size: var(--t-s); font-weight: 700; color: var(--ink);
   background: rgba(255,255,255,0.9); border: 1px solid var(--line-strong);

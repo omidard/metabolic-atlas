@@ -8,7 +8,7 @@ import { loadGem, loadMedia, fmt, onEditsChanged } from './data.js';
 import { getContext, setContext, onContext } from './context.js';
 import { getGLPK, buildLP, boundType, maxGrowth, productTarget, pathwayFeasibility, pathwayPFBA, pathwayFVA, stepConstraints, stepRealizations, diagnoseSteps, statusName, STEP_MIN_FLUX } from './fba.js';
 import { sampleFluxSpace, carbonCount } from './analysis_engine.js';
-import { chartBlock, fvaSamplingRows, fluxNum } from './charts.js';
+import { fluxMini, fluxNum } from './charts.js';
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const TOP_N = 10;               // pathways feasibility-tested automatically per run
@@ -525,14 +525,15 @@ export async function initMode2(panel, ctx) {
   // ---------- yield vs substrate uptake, from the feasibility optimum ----------
   // Basis: the substrate exchange of the run (swapped-in substrate when active,
   // otherwise the medium's carbon source). mol/mol from the LP solution; C-mol
-  // basis only when both formulas carry a carbon count.
-  function yieldLine(r) {
+  // basis only when both formulas carry a carbon count. Rendered into the
+  // pathway header's Yield fact.
+  function yieldFactHTML(r) {
     const run = state.run;
-    if (!r.vars || r.productFlux == null) return '';
+    if (!r.vars || r.productFlux == null) return '<span class="fact-na">not computed</span>';
     const subEx = (run.info && run.info.subEx) || (state.working && state.working.carbon_exchange);
-    if (!subEx) return ' · yield not computed (no substrate exchange identified)';
+    if (!subEx) return '<span class="fact-na">not computed (no substrate exchange identified)</span>';
     const up = r.vars[subEx];
-    if (up == null || up >= -1e-9) return ` · yield not computed (no <span class="mono">${esc(subEx)}</span> uptake in the optimum)`;
+    if (up == null || up >= -1e-9) return `<span class="fact-na">not computed (no <span class="mono">${esc(subEx)}</span> uptake in the optimum)</span>`;
     const molmol = r.productFlux / Math.abs(up);
     const subMid = subEx.replace(/^EX_/, '');
     const prodMid = run.target.mid || run.lastResults.prod;
@@ -540,9 +541,16 @@ export async function initMode2(panel, ctx) {
     const fP = run.gem.metabolites.find(m => m.id === prodMid) || run.gem.metabolites.find(m => m.id === run.lastResults.prod);
     const cS = carbonCount(fS && fS.formula), cP = carbonCount(fP && fP.formula);
     const cmol = (cS && cP) ? molmol * cP / cS : null;
-    return ` · yield ${molmol.toFixed(3)} mol/mol ${cmol != null ? `(${cmol.toFixed(3)} C-mol/C-mol)` : '(C-mol basis not computed: formula lacks a carbon count)'}
-      vs <span class="mono">${esc(subEx)}</span> uptake ${Math.abs(up).toFixed(3)}`;
+    return `<strong>${molmol.toFixed(3)}</strong> mol/mol${cmol != null ? ` · ${cmol.toFixed(3)} C-mol/C-mol` : ''}
+      <span class="fact-note">${cmol == null ? 'C-mol basis not computed: formula lacks a carbon count · ' : ''}basis: product flux vs <span class="mono">${esc(subEx)}</span> uptake ${Math.abs(up).toFixed(3)} mmol gDW<sup>-1</sup> h<sup>-1</sup></span>`;
   }
+
+  // A header fact of the expanded panel (Feasibility, Max product flux, Yield).
+  function setFact(card, key, html) {
+    const dd = card && card.querySelector(`.pwh-facts [data-pwh="${key}"] dd`);
+    if (dd) dd.innerHTML = html;
+  }
+  const FACT_NA = '<span class="fact-na">not computed</span>';
 
   // ---------- FVA + flux sampling per pathway (the deep run) ----------
   // FVA: min and max flux of each pathway reaction with the product held at
@@ -626,37 +634,86 @@ export async function initMode2(panel, ctx) {
     }
   }
 
-  // Per-reaction pFBA flux + FVA range into the step rows of the card.
+  // Shared view over a deep run: one flux domain for every mini chart of the
+  // pathway (so the bars compare across steps) and the reaction with the
+  // narrowest FVA envelope. Computed once per deep result, from stored solves.
+  function deepView(d) {
+    if (d.view) return d.view;
+    const vals = [];
+    let limRid = null, limW = Infinity, nRanged = 0;
+    for (const rid of d.rids) {
+      const rr = d.fva && d.fva.ranges[rid];
+      if (rr && rr.min != null && rr.max != null) {
+        vals.push(rr.min, rr.max);
+        nRanged++;
+        const w = rr.max - rr.min;
+        if (w < limW) { limW = w; limRid = rid; }
+      }
+      const ss = d.sample && d.sample.ok && d.sample.stats.get(rid);
+      if (ss) vals.push(ss.min, ss.max);
+      const v = d.pfba ? d.pfba[rid] : null;
+      if (v != null) vals.push(v);
+    }
+    if (!vals.length) { d.view = { lo: null, hi: null, limRid: null, limW: null, nRanged: 0 }; return d.view; }
+    let lo = Math.min(...vals, 0), hi = Math.max(...vals, 1e-9);
+    const pad = (hi - lo) * 0.05 || 0.5;
+    d.view = { lo: lo < 0 ? lo - pad : lo, hi: hi + pad, limRid, limW, nRanged };
+    return d.view;
+  }
+
+  // Per-reaction flux panel in the step rows: an FVA envelope + sampled
+  // distribution mini on the shared domain, the numbers with units, and a tag
+  // on the reaction with the narrowest FVA range.
   function fillFluxSlots(idx, pw) {
     const run = state.run;
     const card = ctx.findCard(idx);
     const d = state.deep.get(idx);
     if (!run || !card || !d) return;
+    const view = deepView(d);
     const gemRxns = new Set(run.gem.reactions.map(x => x.id));
     card.querySelectorAll('.rxn-alt').forEach(row => {
       const rid = row.dataset.rxn;
       const fslot = row.querySelector('.flux-slot');
       if (!fslot) return;
-      if (!gemRxns.has(rid)) { fslot.innerHTML = `<span class="fluxval na">not in ${esc(run.acc)}</span>`; return; }
-      const v = d.pfba ? d.pfba[rid] : null;
+      if (!gemRxns.has(rid)) { fslot.innerHTML = `<span class="fluxna">not in ${esc(run.acc)}</span>`; return; }
+      if (!d.rids.includes(rid)) {
+        fslot.innerHTML = `<span class="fluxna">not computed: beyond the FVA cap (${d.rids.length} of ${d.allRids.length} pathway reactions ranged)</span>`;
+        return;
+      }
       const rr = d.fva && d.fva.ranges[rid];
-      const vTxt = v == null ? 'pFBA not computed' : `v ${fluxNum(v)}`;
-      const rTxt = rr && rr.min != null && rr.max != null ? ` · FVA [${fluxNum(rr.min)}, ${fluxNum(rr.max)}]` : '';
-      fslot.innerHTML = `<span class="fluxval">${vTxt}${rTxt}</span>`;
+      const fva = (rr && rr.min != null && rr.max != null) ? rr : null;
+      const ss = (d.sample && d.sample.ok && d.sample.stats.get(rid)) || null;
+      const v = d.pfba ? (d.pfba[rid] ?? null) : null;
+      const lim = (view.limRid === rid && view.nRanged > 1)
+        ? '<span class="limit-tag" title="Smallest max minus min FVA flux among this pathway&#39;s ranged reactions">narrowest FVA range</span>' : '';
+      const mini = view.lo != null ? fluxMini(fva, ss, v, { lo: view.lo, hi: view.hi, width: 240 }) : '';
+      fslot.innerHTML = `${lim}${mini}
+        <div class="fluxnums">
+          <span class="fn-fva">FVA ${fva ? `[${fluxNum(fva.min)}, ${fluxNum(fva.max)}]` : 'not computed'}</span>
+          <span class="fn-p">pFBA ${v != null ? fluxNum(v) : 'not computed'}</span>
+          <span class="fn-s">${ss ? `med ${fluxNum(ss.median)} · 5-95% [${fluxNum(ss.p5)}, ${fluxNum(ss.p95)}]` : 'sampling not computed'}</span>
+          <span class="fn-u">mmol gDW<sup>-1</sup> h<sup>-1</sup></span>
+        </div>`;
     });
   }
 
-  // Per-card Simulate details: feasibility + yield line, then the FVA-vs-
-  // sampling chart when the deep run has been done, else the run button.
+  // Per-card Simulate details. The verdict, max product flux and yield go to
+  // the pathway header facts; the panel's Simulate strip carries the method
+  // caption with its denominators, the chart legend, and the run controls.
   function renderCardDetail(idx, pw) {
     const run = state.run;
     const card = ctx.findCard(idx);
     if (!run || !card) return;
     const slot = card.querySelector('.mode2-slot');
     if (!slot) return;
+    const medium = state.working ? state.working.label : '';
+    const onLine = `<span class="fact-note">on <span class="mono">${esc(run.acc)}</span> · ${esc(medium)}</span>`;
     const r = run.results.get(idx);
     if (!r) {
-      slot.innerHTML = `<div class="m2-detail"><span class="status">Not tested on this GEM + medium.</span>
+      setFact(card, 'feas', `<span class="fact-na">not tested on <span class="mono">${esc(run.acc)}</span> · ${esc(medium)}</span>`);
+      setFact(card, 'flux', FACT_NA);
+      setFact(card, 'yield', FACT_NA);
+      slot.innerHTML = `<div class="m2-detail"><span class="status">Feasibility not tested on this GEM + medium.</span>
         <button class="btn small" type="button" data-m2test>Test this pathway</button>
         <span class="status" data-m2prog role="status" aria-live="polite"></span></div>`;
       slot.querySelector('[data-m2test]').addEventListener('click', async () => {
@@ -666,12 +723,18 @@ export async function initMode2(panel, ctx) {
       return;
     }
     if (!r.testable) {
+      setFact(card, 'feas', `<span class="feas-chip na">not testable in ${esc(run.acc)}</span>`);
+      setFact(card, 'flux', FACT_NA);
+      setFact(card, 'yield', FACT_NA);
       slot.innerHTML = `<div class="m2-detail"><span class="status">Not testable: no reaction of ${esc(run.acc)} interconverts the metabolite pair of step ${r.missingStep != null ? r.missingStep + 1 : '?'} of ${pw.len}.</span></div>`;
       return;
     }
     if (!r.feasible) {
+      setFact(card, 'feas', `<span class="feas-chip bad">infeasible</span> ${onLine}`);
+      setFact(card, 'flux', `<span class="fact-na">none: LP ${esc(statusName(r.status))}</span>`);
+      setFact(card, 'yield', FACT_NA);
       slot.innerHTML = `<div class="m2-detail">
-        <span class="status">Infeasible: under ${esc(run.acc)}'s bounds on ${esc(state.working.label)}, no steady-state flux carries every step at ≥ ${STEP_MIN_FLUX} while producing the product (LP: ${esc(statusName(r.status))}).</span>
+        <span class="status">Infeasible: under ${esc(run.acc)}'s bounds on ${esc(medium)}, no steady-state flux carries every step at ≥ ${STEP_MIN_FLUX} while producing the product (LP: ${esc(statusName(r.status))}).</span>
         <button class="btn small" type="button" data-m2diag>Diagnose steps</button>
         <span class="status" data-m2prog role="status" aria-live="polite"></span>
       </div>`;
@@ -679,14 +742,16 @@ export async function initMode2(panel, ctx) {
       return;
     }
 
-    const d = state.deep.get(idx);
-    const head = `<span class="status">Feasible on ${esc(state.working.label)}: max product flux
-      <strong>${r.productFlux.toFixed(3)}</strong> mmol gDW<sup>-1</sup> h<sup>-1</sup>
-      (every step at ≥ ${STEP_MIN_FLUX})${yieldLine(r)}.</span>`;
+    setFact(card, 'feas', `<span class="feas-chip ok">feasible</span> ${onLine}`);
+    setFact(card, 'flux', `<strong>${r.productFlux.toFixed(3)}</strong> mmol gDW<sup>-1</sup> h<sup>-1</sup>
+      <span class="fact-note">product export maximum; every step at ≥ ${STEP_MIN_FLUX} mmol gDW<sup>-1</sup> h<sup>-1</sup></span>`);
+    setFact(card, 'yield', yieldFactHTML(r));
 
+    const d = state.deep.get(idx);
     if (!d) {
-      slot.innerHTML = `<div class="m2-detail">${head}
-        <button class="btn small" type="button" data-m2deep>Run FVA + flux sampling</button>
+      slot.innerHTML = `<div class="m2-detail">
+        <span class="status">Per-reaction flux ranges not computed yet for this pathway.</span>
+        <button class="btn small" type="button" data-m2deep>Run FVA + flux sampling (${sampleCount()} samples)</button>
         <span class="status" data-m2prog role="status" aria-live="polite"></span></div>`;
       slot.querySelector('[data-m2deep]').addEventListener('click', async () => {
         state.cancel = false;
@@ -696,25 +761,28 @@ export async function initMode2(panel, ctx) {
       return;
     }
 
-    // chart rows in pathway-step order
-    const rows = d.rids.map(rid => ({
-      label: rid,
-      fva: d.fva ? d.fva.ranges[rid] || null : null,
-      s: (d.sample && d.sample.ok && d.sample.stats.get(rid)) || null,
-    }));
+    const view = deepView(d);
     const sNote = d.sample && d.sample.ok
       ? `${d.sample.samples} of ${d.stamp.requested} requested samples solved${d.sample.failed ? ` (${d.sample.failed} failed)` : ''}${d.sample.cancelled ? '; sampling cancelled early' : ''}, seed ${d.sample.seed}`
       : `sampling not computed${d.sample && d.sample.reason ? ` (${esc(d.sample.reason)})` : ''}`;
     const fvaNote = d.fva && d.fva.cancelled
       ? `FVA cancelled after ${d.fva.done} of ${d.fva.total} reactions` :
-      `FVA over ${d.rids.length}${d.allRids.length > d.rids.length ? ` of ${d.allRids.length}` : ''} pathway reactions`;
-    slot.innerHTML = `<div class="m2-detail m2-deep">${head}</div>
-      ${chartBlock(
-        `FVA range vs sampled flux per pathway reaction (${d.rids.length}${d.allRids.length > d.rids.length ? ` of ${d.allRids.length}` : ''} reactions in ${esc(run.acc)})`,
-        fvaSamplingRows(rows, { width: Math.max(300, Math.min(slot.clientWidth || 380, 560)) }),
-        `${fvaNote}, product held at ≥ 99% of this pathway's optimum with every step constraint active.
-         Sampling: random-objective vertex sampling of the same constrained space; ${sNote}.
-         Units mmol gDW<sup>-1</sup> h<sup>-1</sup>.`)}
+      `FVA over ${d.rids.length}${d.allRids.length > d.rids.length ? ` of ${d.allRids.length}` : ''} pathway reaction${d.allRids.length > 1 ? 's' : ''} in ${esc(run.acc)}`;
+    const limNote = (view.limRid && view.nRanged > 1)
+      ? `<span class="status">Narrowest FVA range of the ${view.nRanged} reactions ranged: <span class="mono">${esc(view.limRid)}</span> (width ${fluxNum(view.limW)} mmol gDW<sup>-1</sup> h<sup>-1</sup>); tagged in its step.</span>` : '';
+    slot.innerHTML = `<div class="m2-deepinfo">
+        <span class="status">Flux panels beside each step: ${fvaNote}, product held at ≥ 99% of this pathway's optimum with every step constraint active.
+          Sampling: random-objective vertex sampling of the same constrained space; ${sNote}.
+          All panels share one flux axis, ${fluxNum(view.lo)} to ${fluxNum(view.hi)} mmol gDW<sup>-1</sup> h<sup>-1</sup>.</span>
+        ${limNote}
+        <div class="m2-legend">
+          <span class="lgi"><span class="lg-env" aria-hidden="true"></span>FVA range</span>
+          <span class="lgi"><span class="lg-pfba" aria-hidden="true"></span>pFBA optimum</span>
+          <span class="lgi"><span class="lg-band" aria-hidden="true"></span>sampled 5-95%</span>
+          <span class="lgi"><span class="lg-med" aria-hidden="true"></span>sampled median</span>
+          <span class="lgi">whisker = sampled min to max</span>
+        </div>
+      </div>
       <div class="m2-detail">
         <button class="btn small" type="button" data-m2deep>Re-run FVA + sampling (${sampleCount()} samples)</button>
         <span class="status" data-m2prog role="status" aria-live="polite"></span>
