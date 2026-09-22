@@ -28,8 +28,13 @@ export async function createMap(container, graph, groupColors, opts = {}) {
   // Depth cue for every node and edge alike: white distance fog fades the far
   // side of the cloud, so the near structure (the z=0 central-carbon sheet in
   // the default view) separates from the background without any per-group
-  // styling. Ranges sit beyond the default camera distance (~46).
-  scene.fog = new THREE.Fog(0xffffff, 56, 92);
+  // styling. The range TRACKS the camera distance (updated per frame in the
+  // render loop): near sits just past the camera-to-target distance and far a
+  // fixed span beyond it, so the far side of the cloud fades by at most ~25%
+  // at ANY zoom. A static range bleached the whole network to white once the
+  // camera orbited past it.
+  const FOG_NEAR_PAD = 6, FOG_SPAN = 170;
+  scene.fog = new THREE.Fog(0xffffff, 56 + FOG_NEAR_PAD, 56 + FOG_SPAN);
   const camera = new THREE.PerspectiveCamera(45, W() / H(), 0.1, 600);
   // Default view faces the x-y plane with a small tilt and frames the flat
   // central-carbon sheet at z=0 (about +-21 units, biomass at the centre), so
@@ -128,8 +133,9 @@ export async function createMap(container, graph, groupColors, opts = {}) {
     });
     return new THREE.Points(geo, mat);
   }
+  const NODE_OPACITY = 1.0;
   const px = Math.min(window.devicePixelRatio, 2);
-  const mainPoints = buildPoints(mainIds, 4.5 * px, 0.95, false);
+  const mainPoints = buildPoints(mainIds, 5.5 * px, NODE_OPACITY, false);
   const curPoints = buildPoints(curIds, 2.5 * px, 0.4, true);
   scene.add(mainPoints, curPoints);
 
@@ -155,7 +161,7 @@ export async function createMap(container, graph, groupColors, opts = {}) {
   // One opacity for ALL main edges (no special case for the central-carbon
   // sheet), lifted enough that the reaction edges among the sheet nodes read:
   // glycolysis as a column, the TCA cycle as a ring.
-  const EDGE_OPACITY = 0.26;
+  const EDGE_OPACITY = 0.4;
   function buildEdges() {
     const mainPos = [], mainCol = [], curPos = [];
     for (const r of graph.reactions) {
@@ -346,7 +352,7 @@ export async function createMap(container, graph, groupColors, opts = {}) {
   function maybeUndim() {
     if (hlGroup || koGroup || fluxGroup) return;
     mainEdges.material.opacity = EDGE_OPACITY;
-    mainPoints.material.opacity = 0.95;
+    mainPoints.material.opacity = NODE_OPACITY;
     curEdges.material.opacity = 0.05;
     curPoints.material.opacity = 0.4;
   }
@@ -479,6 +485,10 @@ export async function createMap(container, graph, groupColors, opts = {}) {
       }
     }
     controls.update();
+    // fog follows the camera: gentle depth fade at every zoom, never a bleach
+    const camDist = camera.position.distanceTo(controls.target);
+    scene.fog.near = camDist + FOG_NEAR_PAD;
+    scene.fog.far = camDist + FOG_SPAN;
     if (pendingHover && hoverCb) {
       hoverCb(pick(pendingHover));
       pendingHover = null;

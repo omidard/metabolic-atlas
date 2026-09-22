@@ -206,9 +206,9 @@ h3 { font-size: var(--t-m); margin: var(--s4) 0 var(--s2); }
 /* ---------- workbench: search bar, then the full-width map, then results ---------- */
 .workbench { display: flex; flex-direction: column; gap: var(--s4); margin-top: var(--s4); }
 
-.map-pane { position: relative; min-height: 300px; height: clamp(300px, calc(100vh - 380px), 620px); background: var(--surface); border: 1px solid var(--line); border-radius: var(--r2); overflow: hidden; }
-@media (max-width: 1023px) { .map-pane { height: 420px; } }
-@media (max-width: 519px) { .map-pane { height: 320px; } }
+.map-pane { position: relative; min-height: 420px; height: clamp(420px, calc(100vh - 330px), 820px); background: var(--surface); border: 1px solid var(--line); border-radius: var(--r2); overflow: hidden; }
+@media (max-width: 1023px) { .map-pane { height: 480px; } }
+@media (max-width: 519px) { .map-pane { height: 360px; } }
 .map-pane canvas { display: block; }
 .map-hud {
   position: absolute; top: var(--s2); left: var(--s2); z-index: 12;
